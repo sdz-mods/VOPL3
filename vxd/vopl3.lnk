@@ -1,0 +1,12 @@
+system win_vxd dynamic
+option quiet
+option map=vopl3.map
+option nodefaultlibs
+name vopl3.vxd
+file vopl3.obj
+segment '_TEXT'  PRELOAD NONDISCARDABLE IOPL
+segment '_DATA'  PRELOAD NONDISCARDABLE IOPL
+segment 'CONST'  PRELOAD NONDISCARDABLE IOPL
+segment 'CONST2' PRELOAD NONDISCARDABLE IOPL
+segment '_BSS'   PRELOAD NONDISCARDABLE IOPL
+export VXD_DDB.1

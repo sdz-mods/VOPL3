@@ -1,0 +1,8 @@
+REGEDIT4
+
+[HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\VxD\VOPL3]
+"StaticVxD"="vopl3.vxd"
+"Start"=hex:00
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Run]
+"VOPL3Renderer"="C:\\VOPL3\\VOPLSRV.EXE"
