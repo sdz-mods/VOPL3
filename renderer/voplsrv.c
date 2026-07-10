@@ -6,8 +6,9 @@
  * the sound driver are needed.
  *
  * It is a GUI-subsystem app (WinMain, no console) so it runs silently in the
- * background with no window - only errors pop up a message box. To stop it,
- * end "VOPLSRV" from the Close Program list (Ctrl+Alt+Del).
+ * background - only errors pop up a message box. It owns one hidden window,
+ * created purely so Windows can talk to it: WM_ENDSESSION stops the audio
+ * before the system tears the process down (avoid blue screen).
  *
  * Build (Open Watcom, Win32, runs on Win98): see build.ps1.
  * Nuked OPL3 (opl3.c) is LGPL 2.1 and shipped as a separate module.
@@ -50,8 +51,51 @@ static void apply_writes(void)
     }
 }
 
+/* ---- clean shutdown ----
+ * Stop the audio while the process is still healthy. */
+static void audio_stop(void)
+{
+    int i;
+    if (hwo) {
+        waveOutReset(hwo);                 /* returns all queued buffers */
+        for (i = 0; i < NBUF; i++)
+            waveOutUnprepareHeader(hwo, &hdr[i], sizeof(WAVEHDR));
+        waveOutClose(hwo);
+        hwo = NULL;
+    }
+    if (hvxd && hvxd != INVALID_HANDLE_VALUE) {
+        CloseHandle(hvxd);
+        hvxd = NULL;
+    }
+    timeEndPeriod(1);
+}
+
+static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_QUERYENDSESSION:
+        return TRUE;                       /* no objection to shutdown */
+    case WM_ENDSESSION:
+        if (wp) {                          /* the session IS ending: after we
+                                            * return, the process can be killed
+                                            * at any moment - stop audio NOW */
+            audio_stop();
+            ExitProcess(0);
+        }
+        return 0;
+    case WM_CLOSE:                         /* "End Task" from Close Program */
+        DestroyWindow(hwnd);
+        return 0;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProc(hwnd, msg, wp, lp);
+}
+
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
 {
+    static WNDCLASS wc;                    /* static: zero-initialized */
     WAVEFORMATEX wf;
     HANDLE       hev;
     int i;
@@ -63,6 +107,17 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
                    "VOPL3 renderer", MB_OK | MB_ICONSTOP);
         return 1;
     }
+
+    /* Hidden top-level window: exists only to receive WM_ENDSESSION (clean
+     * audio stop at shutdown - see header comment) and WM_CLOSE (End Task).
+     * Never shown. */
+    wc.lpfnWndProc   = wndproc;
+    wc.hInstance     = hInst;
+    wc.lpszClassName = "VOPLSRV";
+    RegisterClass(&wc);
+    CreateWindow("VOPLSRV", "VOPLSRV", WS_OVERLAPPED,
+                 CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+                 NULL, NULL, hInst, NULL);
 
     /* Win9x's default scheduler tick is ~55 ms, so a polling loop that falls
      * back to Sleep() starves the audio buffers in bursts even when the CPU is
@@ -112,9 +167,22 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     /* steady state: the event fires each time waveOut finishes a buffer; wake,
      * drain the newest register writes, regenerate every freed buffer and
      * requeue it. The timeout is only a safety net so we still drain the ring
-     * if playback ever stalls. */
+     * if playback ever stalls. MsgWaitForMultipleObjects (QS_ALLINPUT covers
+     * sent messages too) also wakes for window messages, so the hidden window
+     * receives WM_ENDSESSION/WM_CLOSE without a second thread. */
     for (;;) {
-        WaitForSingleObject(hev, 100);
+        DWORD wr = MsgWaitForMultipleObjects(1, &hev, FALSE, 100, QS_ALLINPUT);
+        if (wr == WAIT_OBJECT_0 + 1) {
+            MSG m;
+            while (PeekMessage(&m, NULL, 0, 0, PM_REMOVE)) {
+                if (m.message == WM_QUIT) {    /* End Task -> clean exit */
+                    audio_stop();
+                    return 0;
+                }
+                TranslateMessage(&m);
+                DispatchMessage(&m);
+            }
+        }
         for (i = 0; i < NBUF; i++) {
             if (hdr[i].dwFlags & WHDR_DONE) {
                 apply_writes();

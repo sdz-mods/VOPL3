@@ -9,11 +9,10 @@ digital sound effects and MIDI.
 
 ---
 
-## The problem
-
-DOS games make music on the **OPL2/OPL3 FM synthesizer** — the "AdLib" chip built
-into every Sound Blaster — by writing registers to I/O ports **0x388–0x38B**.
-On the hardware of the era those writes reached a real Yamaha chip.
+Many DOS games produced music through an AdLib-compatible OPL2 or OPL3-style FM
+synthesizer found on early ISA sound cards, whether implemented with a genuine
+Yamaha chip or compatible hardware. Games controlled it by writing to I/O ports
+0x388–0x389, with OPL3-compatible hardware also using 0x38A–0x38B.
 
 Modern machines don't have that chip. A laptop running Windows 98/ME on HD-Audio
 (via the WDMHDA driver) has a perfectly good *digital* audio path but **no FM
@@ -23,10 +22,9 @@ synthesize FM. It only claims port 0x388 to *fake AdLib detection*: a game probe
 0x388, sees the expected status bits, decides "AdLib present," and then plays its
 music into a void. **Detection passes; the music is silent.**
 
-VOPL3 fills exactly that gap: it makes those OPL register writes actually produce
-sound again.
+VOPL3 fills that gap: it makes those OPL register writes actually produce sound again.
 
-## Scope — when it applies
+## Scope
 
 VOPL3 is for systems whose audio hardware has **no FM synthesizer of its own** and
 that rely on **SBEMUL** for DOS Sound Blaster support — the common case on modern
@@ -37,11 +35,8 @@ normal Windows output, so the *output* side works with any sound card; but the
 I/O layer, so it also catches raw OPL-port writes from **Win16/Win32** programs in
 the System VM, not just DOS boxes (verified).
 
-So if your sound card provides its **own hardware OPL3/FM** — for example some
-**Yamaha YMF7xx (DS-1)** cards — DOS FM already works through the card, its driver
-typically already owns 0x388–0x38B, and you **don't need VOPL3** (installing it
-alongside such a driver would just contend for the same ports). VOPL3 is the
-answer when the FM is missing, not when it's already there.
+So if your sound card provides its **own FM synth** you likely don't need this
+(unless when using it with a WDM driver AFAIK).
 
 ## How it works
 
@@ -87,43 +82,17 @@ SBEMUL's digital audio — so **no changes to the sound driver are needed** and 
 *output* is not tied to any particular card (see **Scope** for the input side).
 
 ### 3. `SBPATCH.EXE` — the SBEMUL coexistence patch
-See "Why patch SBEMUL" below. Run once at install time; it edits the user's own
-`SBEMUL.SYS` so it stops fighting VOPL3 over port 0x388.
-
-## Why it's built this way
-
-**Kernel trap + user-mode render (the split).** Port trapping *requires* a VxD
-(ring 0). But accurate OPL3 emulation is heavy floating-point DSP, and playback
-wants `waveOut`/KMIXER — neither of which belongs in a ring-0 VxD. So the design
-splits along the natural line: the VxD does the one thing only the kernel can
-(catch the writes) and nothing else; the renderer does the heavy lifting in user
-mode where it's safe and where the audio stack lives. A lock-free **ring buffer**
-decouples the realtime producer (the I/O trap) from the consumer (the renderer).
-
-**Why patch SBEMUL instead of just taking port 0x388.** SBEMUL grabs 0x388 *only*
-to fake AdLib detection — it produces no FM sound — and, critically, it **tears
-down its entire emulation if another driver claims 0x388**. So just stealing the
-port kills SBEMUL's digital audio too, and you'd be back to "music OR sound
-effects, never both." `SBPATCH.EXE` instead moves SBEMUL's four FM-port table
-entries (0x388–0x38B) to (hopefully) unused ports, so SBEMUL keeps its digital
-audio + MIDI and simply stops touching 0x388, leaving it for VOPL3. The result:
-**OPL3 music (VOPL3) and digital SFX/MIDI (SBEMUL) at the same time.**
-(Reverse-engineering confirmed SBEMUL has no OPL synthesizer and no hidden way 
-to feed FM to another driver, so patching it out of 0x388 is the clean answer.)
+SBEMUL grabs 0x388 *only* to fake AdLib detection — it produces no FM sound —
+and, it **tears down its entire emulation if another driver claims 0x388**.
+Just stealing the port kills SBEMUL's digital audio (only FM synth would work),
+`SBPATCH.EXE` instead moves SBEMUL's four FM-port table entries (0x388–0x38B)
+to (hopefully) unused ports, so SBEMUL keeps its digital audio + MIDI and simply
+stops touching 0x388, leaving it for VOPL3. The result: **OPL3 music (VOPL3) and
+digital SFX/MIDI (SBEMUL) at the same time.**
 
 The patcher is deliberately careful: it validates the PE checksum before touching
-anything, finds the FM-port table **by byte pattern** (so it works across Win98
-builds rather than a hardcoded offset), backs up the original as
-`SBEMUL.SYS.orig`, and **never redistributes Microsoft's binary** —
-it patches your own file in place and recomputes the checksum.
-
-**Fighting the Win98 scheduler (the choppiness fix).** On a single-CPU Win9x
-machine a CPU-bound DOS game (DOOM) starves the user-mode renderer, which made the
-music stutter even though the game ran fine. The renderer counters this with
-`timeBeginPeriod(1)`, `REALTIME_PRIORITY_CLASS` + a time-critical thread, and a
-deep (~160 ms) `waveOut` buffer refilled off a **`CALLBACK_EVENT`** — so it sleeps
-until a buffer frees, then briefly preempts the game to refill. Latency on music
-is inaudible; the stutter is gone.
+anything, finds the FM-port table by byte pattern (so it works across Win98
+builds rather than a hardcoded offset), backs up the original as `SBEMUL.SYS.orig`.
 
 ## What's used from other projects
 
@@ -144,25 +113,10 @@ their own licenses:
   so LGPL 2.1 asks that a user be able to relink the renderer against a modified
   Nuked OPL3. That's satisfied here: the full Nuked OPL3 source and its license are
   included, and [BUILD.md](BUILD.md) shows how to rebuild `voplsrv.exe` from source.
-  Keep `nuked-opl3/` (source + `LICENSE`) with any binary you distribute.
 - **vmdisp9x** glue + `fixlink` (`ref/vmdisp9x/`, and the bundled `vxd/` headers)
   are **MIT**.
 - **Microsoft's `SBEMUL.SYS` is not included or redistributed** — `SBPATCH.EXE`
   patches the user's own copy in place.
-
-### A note on the VxD toolchain
-Open Watcom's `wlink` emits an LE/VXD header that Windows 9x will **load but
-silently never run**, for two reasons this project had to patch out after linking:
-1. the *ModuleFlags* "no internal fixups" bit is set even though the image *has* a
-   fixup section, so the loader skips relocations and the DDB's control-proc
-   pointer is left at its unrelocated address; and
-2. the DDB ordinal is exported as a 286 **call gate** instead of a 32-bit entry,
-   so VMM resolves a bogus DDB.
-
-`vxd/build.ps1` fixes both in the binary after linking. (There's also a
-zero-fill quirk: BSS isn't reliably mapped at runtime, so all mutable VxD state
-lives in one initialized struct forced into `_DATA`.) These were the difference
-between "loads but does nothing" and a working driver.
 
 ## Repository layout
 
