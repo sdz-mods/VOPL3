@@ -16,7 +16,10 @@ INSTALL
   Run INSTALL.BAT from Windows (in an MS-DOS Prompt / DOS box), from the folder
   that contains these files. It:
     - installs VOPL3.VXD (C:\WINDOWS\SYSTEM, loads at boot),
-    - installs the renderer (C:\VOPL3\VOPLSRV.EXE, autostarts at login),
+    - installs the renderer (C:\VOPL3\VOPLSRV.EXE, autostarts at login).
+      You choose between two builds with identical sound output:
+        1 = Nuked OPL3 (reference), 2 = Nuked OPL3 fast (about half the
+        CPU use - recommended, especially on slower machines),
     - patches SBEMUL.SYS so it stops claiming FM port 388 (keeps digital+MIDI).
   Then REBOOT.
 
@@ -48,4 +51,6 @@ FILES
   INSTALL.REG / UNINSTALL.REG   registry entries
   SBPATCH.EXE                   the SBEMUL.SYS patcher
   VOPL3.VXD                     OPL3 port-trap VxD
-  VOPLSRV.EXE                   user-mode OPL3 renderer (Nuked OPL3, LGPL 2.1)
+  VOPLSRV.EXE                   renderer, Nuked OPL3 backend (LGPL 2.1)
+  VOPLFAST.EXE                  renderer, Nuked-OPL3-fast backend (LGPL 2.1)
+                                (the one you pick is installed as VOPLSRV.EXE)

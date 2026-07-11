@@ -19,13 +19,17 @@ try {
     Move-Item SBPATCH.EXE (Join-Path $dist 'SBPATCH.EXE') -Force
     Remove-Item SBPATCH.OBJ -ErrorAction SilentlyContinue
 
-    # 2. stage the driver + renderer + license under their install names
-    Copy-Item (Join-Path $root 'vxd\vopl3.vxd')        (Join-Path $dist 'VOPL3.VXD')   -Force
-    Copy-Item (Join-Path $root 'renderer\voplsrv.exe') (Join-Path $dist 'VOPLSRV.EXE') -Force
-    Copy-Item (Join-Path $root 'nuked-opl3\LICENSE')   (Join-Path $dist 'NUKED-OPL3-LICENSE.txt') -Force -ErrorAction SilentlyContinue
+    # 2. stage the driver + both renderer builds + licenses under their
+    #    install names (INSTALL.BAT lets the user pick a renderer; the chosen
+    #    one is installed as C:\VOPL3\VOPLSRV.EXE)
+    Copy-Item (Join-Path $root 'vxd\vopl3.vxd')         (Join-Path $dist 'VOPL3.VXD')    -Force
+    Copy-Item (Join-Path $root 'renderer\voplsrv.exe')  (Join-Path $dist 'VOPLSRV.EXE')  -Force
+    Copy-Item (Join-Path $root 'renderer\voplfast.exe') (Join-Path $dist 'VOPLFAST.EXE') -Force
+    Copy-Item (Join-Path $root 'nuked-opl3\LICENSE')    (Join-Path $dist 'NUKED-OPL3-LICENSE.txt') -Force -ErrorAction SilentlyContinue
+    Copy-Item (Join-Path $root 'nuked-opl3-fast\LICENSE') (Join-Path $dist 'NUKED-OPL3-FAST-LICENSE.txt') -Force -ErrorAction SilentlyContinue
 
     # 3. copy the runtime text files, normalised to CRLF for DOS
-    foreach ($t in 'INSTALL.BAT','UNINSTALL.BAT','INSTALL.REG','UNINSTALL.REG','README.TXT') {
+    foreach ($t in 'INSTALL.BAT','UNINSTALL.BAT','INSTALL.REG','UNINSTALL.REG','README.TXT','VOPL3.INI') {
         $src = Join-Path $PSScriptRoot $t
         $dst = Join-Path $dist $t
         $c = ([IO.File]::ReadAllText($src) -replace "`r`n","`n") -replace "`n","`r`n"

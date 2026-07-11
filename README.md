@@ -81,6 +81,12 @@ Windows **`waveOut` (WAVE_MAPPER)** path, where **KMIXER** software-mixes it wit
 SBEMUL's digital audio — so **no changes to the sound driver are needed** and the
 *output* is not tied to any particular card (see **Scope** for the input side).
 
+The renderer ships in **two builds with identical sound output**, chosen at
+install time: `VOPLSRV.EXE` uses the reference **Nuked OPL3**, `VOPLFAST.EXE`
+uses **Nuked-OPL3-fast** (a bit-exact fork) at roughly **half the CPU cost** —
+useful on machines with slower CPUs, where cycle-accurate synthesis is a real
+load. Whichever is chosen gets installed as `C:\VOPL3\VOPLSRV.EXE`.
+
 ### 3. `SBPATCH.EXE` — the SBEMUL coexistence patch
 SBEMUL grabs 0x388 *only* to fake AdLib detection — it produces no FM sound —
 and, it **tears down its entire emulation if another driver claims 0x388**.
@@ -99,6 +105,7 @@ builds rather than a hardcoded offset), backs up the original as `SBEMUL.SYS.ori
 | Component | Origin | License | Role |
 |---|---|---|---|
 | **Nuked OPL3** (`opl3.c`) | Nuke.YKT | LGPL 2.1 | The actual OPL3 emulator inside the renderer |
+| **Nuked-OPL3-fast** | tgies (fork of Nuked OPL3) | LGPL 2.1 | Alternate renderer backend — bit-exact output at ~half the CPU cost |
 | **vmdisp9x** VxD glue (`vmm.h`, `io32.h`, `code32.h`) + `fixlink` | JHRobotics | MIT | Building a loadable Win9x VxD with Open Watcom |
 | **SBEMUL.SYS** | Microsoft (stock Win98) | — | Patched in place for coexistence; **not** redistributed |
 | **Open Watcom** | — | — | Compiler/linker that still targets Win9x (16/32-bit) |
@@ -109,10 +116,12 @@ VOPL3's own code — the VxD, the renderer glue, `SBPATCH`, the installer, and t
 build scripts — is **MIT** (see [LICENSE](LICENSE)). Bundled third-party parts keep
 their own licenses:
 
-- **Nuked OPL3** (`nuked-opl3/`) is **LGPL 2.1**. The renderer statically links it,
-  so LGPL 2.1 asks that a user be able to relink the renderer against a modified
-  Nuked OPL3. That's satisfied here: the full Nuked OPL3 source and its license are
-  included, and [BUILD.md](BUILD.md) shows how to rebuild `voplsrv.exe` from source.
+- **Nuked OPL3** (`nuked-opl3/`) and **Nuked-OPL3-fast** (`nuked-opl3-fast/`)
+  are **LGPL 2.1**. The renderer statically links one of them, so LGPL 2.1 asks
+  that a user be able to relink the renderer against a modified copy. That's
+  satisfied here: the full source of both cores and their licenses are included,
+  and [BUILD.md](BUILD.md) shows how to rebuild `voplsrv.exe` / `voplfast.exe`
+  from source.
 - **vmdisp9x** glue + `fixlink` (`ref/vmdisp9x/`, and the bundled `vxd/` headers)
   are **MIT**.
 - **Microsoft's `SBEMUL.SYS` is not included or redistributed** — `SBPATCH.EXE`
@@ -122,10 +131,12 @@ their own licenses:
 
 ```
 vxd/         VOPL3.VXD — ring-0 port-trap driver (+ build.ps1, patches wlink output)
-renderer/    VOPLSRV.EXE — user-mode Nuked-OPL3 renderer (hidden background app)
+renderer/    the user-mode renderer (hidden background app); built twice:
+             VOPLSRV.EXE (Nuked OPL3) and VOPLFAST.EXE (Nuked-OPL3-fast)
 installer/   INSTALL.BAT / UNINSTALL.BAT, SBPATCH.C (the SBEMUL patcher), README,
              and build.ps1 that assembles the shippable dist/ package
 nuked-opl3/  Nuked OPL3 (bundled, LGPL 2.1)
+nuked-opl3-fast/  Nuked-OPL3-fast, tgies' bit-exact ~2x-faster fork (LGPL 2.1)
 ref/         vmdisp9x fixlink + MIT license (the VxD glue headers vmm.h/io32.h/
              code32.h are bundled into vxd/)
 tests/       DOS + host test programs (AdLib/OPL and Sound Blaster probes)
@@ -140,7 +151,8 @@ BUILD.md     build prerequisites and step-by-step
   Prerequisites (Open Watcom 2.0) and step-by-step are in **[BUILD.md](BUILD.md)**.
 - **Install on the Win98/ME machine:** copy the `dist/` folder over and run
   `INSTALL.BAT` from a DOS box — it installs the VxD (boot-loaded), installs the
-  renderer (autostarts hidden), and patches `SBEMUL.SYS`. Reboot. In your DOS
+  renderer (autostarts hidden; you pick the Nuked or the CPU-friendly fast
+  build), and patches `SBEMUL.SYS`. Reboot. In your DOS
   game set **Music = AdLib/OPL3** and **Sound FX = Sound Blaster**. `UNINSTALL.BAT`
   restores the original SBEMUL and removes VOPL3.
 

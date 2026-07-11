@@ -33,9 +33,10 @@ Test-Path tools\ow\binnt64\wcc386.exe    # -> True
 Run these from the repo root, in order:
 
 ```powershell
-.\vxd\build.ps1          # -> vxd\vopl3.vxd        (~5515 bytes)
-.\renderer\build.ps1     # -> renderer\voplsrv.exe (~30720 bytes)
-.\installer\build.ps1    # -> installer\dist\      (the shippable package)
+.\vxd\build.ps1          # -> vxd\vopl3.vxd         (~5515 bytes)
+.\renderer\build.ps1     # -> renderer\voplsrv.exe  (~30720 bytes, Nuked OPL3)
+                         #    renderer\voplfast.exe (~47616 bytes, Nuked-OPL3-fast)
+.\installer\build.ps1    # -> installer\dist\       (the shippable package)
 ```
 
 - **`vxd\build.ps1`** compiles `vopl3.c` (`wcc386`), links a raw VxD (`wlink`),
@@ -46,17 +47,23 @@ Run these from the repo root, in order:
   `fixlink.exe` is built on first run from `ref/vmdisp9x/fixlink/fixlink.c`.
   - Add **`-Serial`** to compile in COM1 debug tracing (`-DVOPL3_SERIAL`); it is
     off by default and costs nothing when off.
-- **`renderer\build.ps1`** compiles `voplsrv.c` together with Nuked OPL3
-  (`nuked-opl3/opl3.c`) and links `winmm`. It builds as a **GUI-subsystem** app
-  (`-l=nt_win`, `WinMain`) so it runs hidden with no console window.
+- **`renderer\build.ps1`** compiles `voplsrv.c` twice — once with Nuked OPL3
+  (`nuked-opl3/opl3.c` → `voplsrv.exe`) and once with Nuked-OPL3-fast
+  (`nuked-opl3-fast/opl3.c` → `voplfast.exe`; bit-exact output, ~2x less CPU) —
+  and links `winmm`. Both build as **GUI-subsystem** apps (`-l=nt_win`,
+  `WinMain`) so they run hidden with no console window. Both are compiled with
+  full optimization (`-otexan -6r -fp6`); Watcom's default is *no* optimization,
+  which makes the synthesis ~2.3x slower — enough to peg a P3-class CPU.
 - **`installer\build.ps1`** builds `SBPATCH.EXE` from `SBPATCH.C` and assembles
-  `installer/dist/` — the VxD, the renderer, `SBPATCH.EXE`, and the CRLF-normalized
-  `INSTALL/UNINSTALL` `.BAT`/`.REG` + `README.TXT`. **`dist/` is the folder you
-  copy to the Win98/ME machine.**
+  `installer/dist/` — the VxD, both renderer builds, `SBPATCH.EXE`, and the
+  CRLF-normalized `INSTALL/UNINSTALL` `.BAT`/`.REG` + `README.TXT`. **`dist/` is
+  the folder you copy to the Win98/ME machine.** `INSTALL.BAT` asks which
+  renderer build to install; either one lands as `C:\VOPL3\VOPLSRV.EXE`.
 
-Build outputs (`vxd/vopl3.vxd`, `renderer/voplsrv.exe`, `installer/dist/`) are not
-committed — the build is deterministic (apart from the renderer `.exe`'s embedded
-PE build-timestamp), so build them with the steps above.
+Build outputs (`vxd/vopl3.vxd`, `renderer/voplsrv.exe`, `renderer/voplfast.exe`,
+`installer/dist/`) are not committed — the build is deterministic (apart from
+the renderer `.exe`s' embedded PE build-timestamp), so build them with the
+steps above.
 
 ## 3. Install (on the Windows 98/ME machine)
 
@@ -91,5 +98,6 @@ syntax, so `build-adlibtst.ps1` needs **NASM** (<https://www.nasm.us/>): put
 | What | Where | License |
 |---|---|---|
 | Nuked OPL3 (`opl3.c/.h`) | `nuked-opl3/` | LGPL 2.1 (`nuked-opl3/LICENSE`) |
+| Nuked-OPL3-fast (`opl3.c/.h`, `wf_rom.h`) | `nuked-opl3-fast/` | LGPL 2.1 (`nuked-opl3-fast/LICENSE`) |
 | `fixlink` + VxD glue headers (`vmm.h`, `io32.h`, `code32.h`) | `ref/vmdisp9x/fixlink/`, `vxd/` | MIT (`ref/vmdisp9x/LICENSE`) |
 | Open Watcom 2.0 | `tools/ow` (not committed) | Sybase Open Watcom Public License |
