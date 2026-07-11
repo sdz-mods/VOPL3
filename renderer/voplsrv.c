@@ -69,7 +69,8 @@ static void load_settings(void)
     gain256 = ((long)pct << 8) / 100;
 }
 
-static void apply_writes(void)
+/* returns the number of register writes drained and applied */
+static DWORD apply_writes(void)
 {
     DWORD ret = 0;
     if (DeviceIoControl(hvxd, IOCTL_VOPL3_DRAIN, NULL, 0,
@@ -79,7 +80,29 @@ static void apply_writes(void)
             DWORD e = drainbuf[i];
             OPL3_WriteReg(&chip, (unsigned short)(e >> 8), (unsigned char)(e & 0xFF));
         }
+        return n;
     }
+    return 0;
+}
+
+/* ---- idle skip ----
+ * The emulator computes every operator even when the chip is silent, so an
+ * idle renderer would cost as much CPU as a playing one. OPL3 silence is
+ * digital zero, so gate on OUTPUT, not on register-write inactivity
+ * (a sustained note can sound forever without further writes):
+ * after IDLE_AFTER consecutive all-zero buffers with nothing drained from
+ * the ring, stop synthesizing and just requeue the buffers, which by then
+ * all hold zeros (IDLE_AFTER >= NBUF guarantees it). Resume on the first
+ * drained register write - games start with detection/init writes well
+ * before the first audible note, so no music onset is ever clipped. */
+#define IDLE_AFTER 48                      /* ~0.5 s of silent buffers */
+
+static int buf_silent(const short *p, int n)
+{
+    int i;
+    for (i = 0; i < n; i++)
+        if (p[i]) return 0;
+    return 1;
 }
 
 /* ---- clean shutdown ----
@@ -129,7 +152,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     static WNDCLASS wc;                    /* static: zero-initialized */
     WAVEFORMATEX wf;
     HANDLE       hev;
-    int i;
+    int   i;
+    int   idle    = 0;                     /* skipping synthesis (chip silent) */
+    DWORD silence = 0;                     /* consecutive all-zero buffers     */
 
     hvxd = CreateFile("\\\\.\\VOPL3", 0, 0, NULL, 0, FILE_FLAG_DELAYED_ERROR, NULL);
     if (hvxd == INVALID_HANDLE_VALUE) {
@@ -218,9 +243,21 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
         }
         for (i = 0; i < NBUF; i++) {
             if (hdr[i].dwFlags & WHDR_DONE) {
-                apply_writes();
-                OPL3_GenerateStream(&chip, bufs[i], FRAMES);
-                apply_gain(bufs[i], FRAMES * 2);
+                DWORD n = apply_writes();
+                if (n) {                       /* chip touched: (re)start */
+                    idle    = 0;
+                    silence = 0;
+                }
+                if (!idle) {
+                    OPL3_GenerateStream(&chip, bufs[i], FRAMES);
+                    apply_gain(bufs[i], FRAMES * 2);
+                    if (n == 0 && buf_silent(bufs[i], FRAMES * 2)) {
+                        if (++silence >= IDLE_AFTER) idle = 1;
+                    } else if (n == 0) {
+                        silence = 0;           /* still sounding (decay etc.) */
+                    }
+                }
+                /* if idle: buffer already holds zeros - requeue it as-is */
                 hdr[i].dwFlags &= ~WHDR_DONE;
                 waveOutWrite(hwo, &hdr[i], sizeof(WAVEHDR));
             }
