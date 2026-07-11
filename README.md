@@ -87,6 +87,11 @@ uses **Nuked-OPL3-fast** (a bit-exact fork) at roughly **half the CPU cost** —
 useful on machines with slower CPUs, where cycle-accurate synthesis is a real
 load. Whichever is chosen gets installed as `C:\VOPL3\VOPLSRV.EXE`.
 
+FM volume is adjustable in `C:\VOPL3\VOPL3.INI` (`volume=<percent>`, default
+**200**, max 400, applied at renderer start). 100 is the OPL3 chip's authentic
+digital level — which sounds quiet next to SBEMUL's digital SFX. The boost is
+applied after synthesis, so the emulator cores stay bit-exact.
+
 ### 3. `SBPATCH.EXE` — the SBEMUL coexistence patch
 SBEMUL grabs 0x388 *only* to fake AdLib detection — it produces no FM sound —
 and, it **tears down its entire emulation if another driver claims 0x388**.

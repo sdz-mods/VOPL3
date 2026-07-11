@@ -37,6 +37,37 @@ static HWAVEOUT  hwo;
 static WAVEHDR   hdr[NBUF];
 static short     bufs[NBUF][FRAMES * 2];
 static DWORD     drainbuf[DRAINMAX];
+static long      gain256 = 512;    /* output gain, 256 = 1.0x; set from INI */
+
+/* ---- FM volume boost ----
+ * Nuked-OPL3 reproduces the OPL3's digital output level exactly, which
+ * sounds quiet next to SBEMUL's digital SFX. Boost after synthesis (the
+ * emulator cores stay untouched / bit-exact).
+ * Configured in VOPL3.INI next to the exe:
+ * [renderer] volume=<percent>, default 200, clamped to 400. */
+static void apply_gain(short *p, int n)
+{
+    long v;
+    int  i;
+    if (gain256 == 256) return;
+    for (i = 0; i < n; i++) {
+        v = ((long)p[i] * gain256) >> 8;
+        if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
+        p[i] = (short)v;
+    }
+}
+
+static void load_settings(void)
+{
+    char ini[MAX_PATH];
+    UINT pct;
+    DWORD n = GetModuleFileName(NULL, ini, sizeof(ini) - 12);
+    while (n && ini[n - 1] != '\\') n--;
+    lstrcpy(ini + n, "VOPL3.INI");
+    pct = GetPrivateProfileInt("renderer", "volume", 200, ini);
+    if (pct > 400) pct = 400;
+    gain256 = ((long)pct << 8) / 100;
+}
 
 static void apply_writes(void)
 {
@@ -133,6 +164,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 
+    load_settings();
     OPL3_Reset(&chip, RATE);
 
     hev = CreateEvent(NULL, FALSE, FALSE, NULL);
@@ -161,6 +193,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
         waveOutPrepareHeader(hwo, &hdr[i], sizeof(WAVEHDR));
         apply_writes();
         OPL3_GenerateStream(&chip, bufs[i], FRAMES);
+        apply_gain(bufs[i], FRAMES * 2);
         waveOutWrite(hwo, &hdr[i], sizeof(WAVEHDR));
     }
 
@@ -187,6 +220,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
             if (hdr[i].dwFlags & WHDR_DONE) {
                 apply_writes();
                 OPL3_GenerateStream(&chip, bufs[i], FRAMES);
+                apply_gain(bufs[i], FRAMES * 2);
                 hdr[i].dwFlags &= ~WHDR_DONE;
                 waveOutWrite(hwo, &hdr[i], sizeof(WAVEHDR));
             }

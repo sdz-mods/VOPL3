@@ -32,6 +32,12 @@ USE
   Music = AdLib (or OPL3) and Sound FX = Sound Blaster. You then get OPL3
   music (via VOPL3) AND digital sound effects (via SBEMUL) at the same time.
 
+FM VOLUME
+  The FM music volume can be adjusted in C:\VOPL3\VOPL3.INI (volume=<percent>,
+  default 200, max 400; takes effect at next start/reboot). 100 is the OPL3
+  chip's authentic digital level, which sounds quiet next to SBEMUL's digital
+  sound.
+
 UNINSTALL
   Run UNINSTALL.BAT (restores the original SBEMUL.SYS, removes VOPL3), reboot.
 
@@ -54,3 +60,4 @@ FILES
   VOPLSRV.EXE                   renderer, Nuked OPL3 backend (LGPL 2.1)
   VOPLFAST.EXE                  renderer, Nuked-OPL3-fast backend (LGPL 2.1)
                                 (the one you pick is installed as VOPLSRV.EXE)
+  VOPL3.INI                     renderer settings (FM volume)
