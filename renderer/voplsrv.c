@@ -69,20 +69,104 @@ static void load_settings(void)
     gain256 = ((long)pct << 8) / 100;
 }
 
-/* returns the number of register writes drained and applied */
-static DWORD apply_writes(void)
+/* ---- timestamped write scheduling ----
+ * Ring entries are (ms15 << 17) | (reg << 8) | data. Applying a whole
+ * drain's worth of writes at one instant deletes any note shorter than the
+ * drain interval: key-on and key-off land with ZERO generated samples in
+ * between, so the envelope opens and closes silently (measured: a 10 ms-
+ * bucketed replay deletes a sizeable fraction of 6 ms staccato notes).
+ * Instead, drained writes are queued with a target SAMPLE position and
+ * applied mid-buffer by render_buffer(), which generates in slices around
+ * them - restoring the real-time spacing the ISA bus gave them.
+ *
+ * Mapping ms -> samples: the first event after silence anchors at the
+ * current stream position; each subsequent event advances the anchor by its
+ * ms delta (wrap-safe, deltas only). Guards: overdue events apply now;
+ * a >2 s gap re-anchors (also covers the 32.7 s timestamp wrap); a runaway
+ * lead (device clock slower than the ms clock) is compressed so latency
+ * stays bounded. */
+#define PQMAX    8192              /* power of two */
+#define SPMS     (RATE / 1000)     /* samples per ms */
+#define MAXAHEAD (FRAMES * NBUF * 2)
+
+static DWORD pq_time[PQMAX];       /* absolute target sample */
+static WORD  pq_reg[PQMAX];
+static BYTE  pq_val[PQMAX];
+static DWORD pq_head, pq_tail;
+static DWORD stream_pos;           /* samples generated since start */
+static DWORD anch_t15, anch_smp, last_tgt;
+static int   anch_ok;
+
+/* drain the VxD ring into the queue; returns entries drained */
+static DWORD drain_events(void)
 {
-    DWORD ret = 0;
-    if (DeviceIoControl(hvxd, IOCTL_VOPL3_DRAIN, NULL, 0,
-                        drainbuf, sizeof(drainbuf), &ret, NULL)) {
-        DWORD n = ret >> 2, i;
-        for (i = 0; i < n; i++) {
-            DWORD e = drainbuf[i];
-            OPL3_WriteReg(&chip, (unsigned short)(e >> 8), (unsigned char)(e & 0xFF));
+    DWORD ret = 0, n, i;
+    if (!DeviceIoControl(hvxd, IOCTL_VOPL3_DRAIN, NULL, 0,
+                         drainbuf, sizeof(drainbuf), &ret, NULL))
+        return 0;
+    n = ret >> 2;
+    for (i = 0; i < n; i++) {
+        DWORD e   = drainbuf[i];
+        DWORD t15 = e >> 17;
+        DWORD tgt;
+        if (!anch_ok) {
+            tgt = stream_pos;
+            anch_ok = 1;
+        } else {
+            DWORD dms = (t15 - anch_t15) & 0x7FFF;
+            if (dms > 2000) {                          /* long gap / wrap */
+                tgt = stream_pos;
+            } else {
+                tgt = anch_smp + dms * SPMS;
+                if ((long)(tgt - stream_pos) < 0)      /* overdue: apply now */
+                    tgt = stream_pos;
+                else if (tgt - stream_pos > MAXAHEAD)  /* clock drift: compress */
+                    tgt = stream_pos + FRAMES;
+            }
         }
-        return n;
+        if ((long)(tgt - last_tgt) < 0) tgt = last_tgt;   /* keep order */
+        anch_t15 = t15; anch_smp = tgt; last_tgt = tgt;
+
+        if (pq_tail - pq_head >= PQMAX) {              /* full: apply oldest */
+            OPL3_WriteRegBuffered(&chip, pq_reg[pq_head & (PQMAX - 1)],
+                                         pq_val[pq_head & (PQMAX - 1)]);
+            pq_head++;
+        }
+        pq_time[pq_tail & (PQMAX - 1)] = tgt;
+        pq_reg [pq_tail & (PQMAX - 1)] = (WORD)((e >> 8) & 0x1FF);
+        pq_val [pq_tail & (PQMAX - 1)] = (BYTE)(e & 0xFF);
+        pq_tail++;
     }
-    return 0;
+    return n;
+}
+
+/* generate FRAMES frames, applying queued writes at their sample offsets.
+ * Writes go through OPL3_WriteRegBuffered, NOT OPL3_WriteReg: buffered
+ * writes get the chip's real minimum spacing (2 chip samples, ~40 us -
+ * the ISA-bus pacing every real OPL3 ever saw). Slamming a whole burst of
+ * writes onto one chip instant with OPL3_WriteReg races the envelope/phase
+ * logic - notes drop and tones come out wrong (proven by A/B against a
+ * DOSBox DRO capture: identical stream, WriteReg = broken, Buffered =
+ * matches DOSBox note-for-note). */
+static void render_buffer(short *dst)
+{
+    DWORD done = 0;
+    while (done < FRAMES) {
+        DWORD n = FRAMES - done;
+        while (pq_head != pq_tail &&
+               (long)(pq_time[pq_head & (PQMAX - 1)] - stream_pos) <= 0) {
+            OPL3_WriteRegBuffered(&chip, pq_reg[pq_head & (PQMAX - 1)],
+                                         pq_val[pq_head & (PQMAX - 1)]);
+            pq_head++;
+        }
+        if (pq_head != pq_tail) {
+            DWORD due = pq_time[pq_head & (PQMAX - 1)] - stream_pos;
+            if (due < n) n = due;
+        }
+        OPL3_GenerateStream(&chip, dst + done * 2, n);
+        done       += n;
+        stream_pos += n;
+    }
 }
 
 /* ---- idle skip ----
@@ -216,8 +300,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
         hdr[i].dwFlags        = 0;
         hdr[i].dwLoops        = 0;
         waveOutPrepareHeader(hwo, &hdr[i], sizeof(WAVEHDR));
-        apply_writes();
-        OPL3_GenerateStream(&chip, bufs[i], FRAMES);
+        drain_events();
+        render_buffer(bufs[i]);
         apply_gain(bufs[i], FRAMES * 2);
         waveOutWrite(hwo, &hdr[i], sizeof(WAVEHDR));
     }
@@ -243,19 +327,22 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
         }
         for (i = 0; i < NBUF; i++) {
             if (hdr[i].dwFlags & WHDR_DONE) {
-                DWORD n = apply_writes();
+                DWORD n = drain_events();
                 if (n) {                       /* chip touched: (re)start */
                     idle    = 0;
                     silence = 0;
                 }
                 if (!idle) {
-                    OPL3_GenerateStream(&chip, bufs[i], FRAMES);
+                    render_buffer(bufs[i]);
                     apply_gain(bufs[i], FRAMES * 2);
-                    if (n == 0 && buf_silent(bufs[i], FRAMES * 2)) {
+                    if (n == 0 && pq_head == pq_tail
+                               && buf_silent(bufs[i], FRAMES * 2)) {
                         if (++silence >= IDLE_AFTER) idle = 1;
                     } else if (n == 0) {
                         silence = 0;           /* still sounding (decay etc.) */
                     }
+                } else {
+                    stream_pos += FRAMES;      /* time passes while idle */
                 }
                 /* if idle: buffer already holds zeros - requeue it as-is */
                 hdr[i].dwFlags &= ~WHDR_DONE;
