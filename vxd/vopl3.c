@@ -7,7 +7,8 @@
  *   - latches the OPL register index and captures each (register, data) write
  *     into a ring buffer (allocated from the VMM heap);
  *   - keeps AdLib detection working (register-index latch + status/timer
- *     flags) so a game that probes the chip is not broken.
+ *     flags) and models the two OPL timers with their real periods, so
+ *     players that pace the music off timer overflows run at correct speed.
  *
  * It does NO audio synthesis. The user-mode renderer (voplsrv.exe) drains the
  * ring buffer via DeviceIoControl and does the actual OPL3 synthesis with
@@ -95,7 +96,9 @@ struct vstate {
     DWORD opl_status;
     DWORD opl_bank;
     DWORD timer1_run, timer2_run, timer_mask;
+    DWORD t1_start, t2_start;  /* Get_System_Time (ms) when timer armed */
     DWORD reads_388, writes_seen;
+    DWORD nonbyte;             /* non-byte I/O ops punted to Simulate_IO */
     DWORD ring_head, ring_tail, ring_lost;
     DWORD ring_addr;           /* VMM-heap ring (allocated at init) */
     BYTE  opl_reg[512];
@@ -166,35 +169,92 @@ static void ser_dec(DWORD v)       { (void)v; }
 #endif
 
 /* ============================ OPL state ============================ */
-/* Just enough OPL status/timer state to keep AdLib *detection* working while
- * we own the port. Timer *periods* are not modelled here (the status flags
- * fire immediately, as SBEMUL's do); real OPL timing and sound come from
- * Nuked OPL3 in the user-mode renderer, which consumes the register writes. */
+/* OPL status/timer emulation. Timer flags used to fire IMMEDIATELY when a
+ * timer was started - enough to pass AdLib detection, but wrong for any
+ * software that actually measures time with the OPL timers. The periods are
+ * now modelled for real (lazily: computed from elapsed time when the status
+ * port is read; no polling, no interrupts): T1 ticks every 80us, T2 every
+ * 320us, period = (256 - preset) * tick. Sub-2ms periods still fire on the
+ * first read, because the clock below is ms-granular - which is exactly what
+ * the classic detection probe (preset 0xFF = 80us period, busy-wait ~100us,
+ * expect the flag) needs anyway. */
 
-/* update status flags from timer-control register (reg 4) */
+/* VTD (Virtual Timer Device) services - not in the bundled vmm.h.
+ * VTD_Get_Real_Time returns raw 1.193182 MHz PIT ticks in EDX:EAX,
+ * hardware-accurate regardless of how the timer interrupt is programmed
+ * (VMM's Get_System_Time makes no such granularity guarantee).
+ * VTD_DEVICE_ID comes from vmm.h; only the service index is added here. */
+#define VTD__VTD_Get_Real_Time  7
+
+/* true milliseconds (sub-ms accurate): low dword of PIT ticks / 1193.
+ * The low dword wraps every ~60 min; the consumers only use short deltas
+ * (mask 0x7FFF / timer periods), so the once-an-hour glitch re-anchors
+ * harmlessly. */
+static DWORD sys_time_ms(void)
+{
+    DWORD lo;
+    VxDCall(VTD, VTD_Get_Real_Time);
+    _asm mov lo, eax
+    return lo / 1193;
+}
+
+/* update timer state from timer-control register (reg 4) */
 static void opl_timer_ctrl(BYTE v)
 {
-    if (v & 0x80) {                 /* IRQ reset: clear all flags */
+    if (v & 0x80) {             /* IRQ reset: clear the flags. The timers keep
+                                 * running; re-arm them from "now" so the next
+                                 * overflow is one full period away (pacing
+                                 * loops reset immediately after seeing the
+                                 * flag, so the phase error is just their poll
+                                 * latency). */
         opl_status = 0;
+        if (timer1_run) S.t1_start = sys_time_ms();
+        if (timer2_run) S.t2_start = sys_time_ms();
         return;
     }
     timer_mask = v;
+    if ((v & 0x01) && !timer1_run) S.t1_start = sys_time_ms();
     timer1_run = (v & 0x01) ? 1 : 0;
+    if ((v & 0x02) && !timer2_run) S.t2_start = sys_time_ms();
     timer2_run = (v & 0x02) ? 1 : 0;
-    /* Detection aid: if a timer is started and unmasked, raise its status
-     * flag immediately instead of after the real timer period. Games probe
-     * the timer this way to detect an OPL, so immediate is enough; precise
-     * timer timing is not modelled here (same as SBEMUL). */
-    if (timer1_run && !(v & 0x40)) opl_status |= 0xC0;   /* IRQ + T1 */
-    if (timer2_run && !(v & 0x20)) opl_status |= 0xA0;   /* IRQ + T2 */
+}
+
+/* evaluate timer overflows (called from the status-port read) */
+static void opl_timer_update(void)
+{
+    if (timer1_run && !(timer_mask & 0x40) && !(opl_status & 0x40)) {
+        DWORD per = ((DWORD)(256 - opl_reg[0x02]) * 80 + 500) / 1000;  /* ms */
+        if (per < 2 || (sys_time_ms() - S.t1_start) >= per)
+            opl_status |= 0xC0;                          /* IRQ + T1 */
+    }
+    if (timer2_run && !(timer_mask & 0x20) && !(opl_status & 0x20)) {
+        DWORD per = ((DWORD)(256 - opl_reg[0x03]) * 320 + 500) / 1000; /* ms */
+        if (per < 2 || (sys_time_ms() - S.t2_start) >= per)
+            opl_status |= 0xA0;                          /* IRQ + T2 */
+    }
 }
 
 /* ===================== register-write ring buffer =====================
- * Single producer (the I/O trap, ring 0) pushes (reg<<8)|data entries;
- * single consumer (the user-mode renderer, via DeviceIoControl) drains them.
- * reg is 0..0x1FF (bank 2 = 0x100 | index). No per-write serial logging here:
- * the serial busy-wait would destroy real-time timing. */
-#define RING_SIZE 512                     /* power of two; ring[] is in struct S */
+ * Single producer (the I/O trap, ring 0) pushes one DWORD per data write:
+ *
+ *     [31..17] Get_System_Time & 0x7FFF   (ms timestamp, wraps at 32.7 s)
+ *     [16..8]  register 0..0x1FF          (bank 1 = 0x100 | index)
+ *     [7..0]   data byte
+ *
+ * Single consumer (the user-mode renderer, via DeviceIoControl) drains them
+ * and re-applies each write at its correct sample offset. The TIMESTAMP is
+ * load-bearing: without it the renderer applied a whole drain's worth of
+ * writes at one instant, so a note keyed on and off within one ~10 ms drain
+ * window rendered ZERO samples and vanished (measured: a 10 ms-bucketed
+ * replay deletes a sizeable fraction of 6 ms staccato notes outright).
+ * The renderer only uses timestamp DELTAS between consecutive entries, so
+ * the 15-bit wrap is harmless.
+ * No per-write serial logging here: the serial busy-wait would destroy
+ * real-time timing. */
+#define RING_SIZE 4096                    /* power of two; heap-allocated. Sized
+                                           * for tracker-style write bursts
+                                           * (whole instrument banks per tick)
+                                           * between renderer drains. */
 
 /* __stdcall so the naked trampolines can push args on the stack */
 void __stdcall opl_write(DWORD port, DWORD data)
@@ -221,9 +281,11 @@ void __stdcall opl_write(DWORD port, DWORD data)
         opl_reg[opl_bank | opl_index] = d;
     }
 
-    /* queue the full (reg,data) for the renderer */
+    /* queue (timestamp, reg, data) for the renderer */
     if (S.ring_addr) {
-        ring[ring_head & (RING_SIZE - 1)] = ((DWORD)(opl_bank | opl_index) << 8) | d;
+        ring[ring_head & (RING_SIZE - 1)] =
+              ((sys_time_ms() & 0x7FFF) << 17)
+            | ((DWORD)(opl_bank | opl_index) << 8) | d;
         ring_head++;
     }
 }
@@ -232,6 +294,7 @@ DWORD __stdcall opl_read(DWORD port)
 {
     reads_388++;
     /* AdLib/OPL only ever reads the status at the base (even) port */
+    opl_timer_update();
     return (DWORD)opl_status;
 }
 
@@ -239,14 +302,36 @@ DWORD __stdcall opl_read(DWORD port)
  * VMM Install_IO_Handler callback convention:
  *   EAX = data (for OUT), EBX = VM handle, ECX = I/O type,
  *   EDX = port, EBP -> client regs. For byte IN, return value in AL.
- * ECX bit 2 (0x04) = direction: 0 = input, 1 = output.
- * OPL access is always byte-wide, so we handle byte in/out directly. */
+ * ECX encodes direction and width: 0 = byte input, 4 = byte output;
+ * anything else (word/dword/string/REP forms, with their flag bits) is
+ * JUMPED to VMM's Simulate_IO, which decomposes the operation into byte
+ * accesses and calls this handler again for each one. Word/dword access
+ * to the OPL ports is legal on real hardware (the ISA bus splits e.g. a
+ * word OUT to 388 into byte cycles at 388 and 389), so a byte-only
+ * handler would silently drop the extra bytes for software that uses it.
+ * The 'nonbyte' counter (STAT ioctl / VOPLSTAT) shows whether any such
+ * I/O is actually occurring. */
+static void __stdcall count_nonbyte(void) { S.nonbyte++; }
+
 void __declspec(naked) io_trap(void)
 {
     _asm {
-        test ecx, 4
-        jnz  _out
-        /* ---- input ---- */
+        cmp  ecx, 4
+        je   _out
+        test ecx, ecx
+        jz   _in
+        /* ---- not a plain byte op: let VMM decompose it ----
+         * VMMJmp(Simulate_IO) emitted by hand (0x8000+148, VMM=1): the
+         * C macro would start new _asm blocks and Watcom scopes asm
+         * labels per block, breaking the jumps above. */
+        pushad
+        call count_nonbyte
+        popad
+        int  20h
+        dw   0x8094           /* 0x8000 | VMM__Simulate_IO (148) */
+        dw   0x0001           /* VMM_DEVICE_ID */
+    _in:
+        /* ---- byte input ---- */
         push ebx
         push ecx
         push edx
@@ -402,9 +487,15 @@ DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params
 
         case IOCTL_VOPL3_STAT:
             if (params->cbOutBuffer >= 12) {
+                DWORD nout = 12;
                 out[0] = ring_head; out[1] = ring_tail; out[2] = ring_lost;
+                if (params->cbOutBuffer >= 20) {   /* extended stats */
+                    out[3] = writes_seen;
+                    out[4] = S.nonbyte;
+                    nout = 20;
+                }
                 if (params->lpcbBytesReturned)
-                    *(DWORD *)params->lpcbBytesReturned = 12;
+                    *(DWORD *)params->lpcbBytesReturned = nout;
                 rc = 0;
             }
             break;
