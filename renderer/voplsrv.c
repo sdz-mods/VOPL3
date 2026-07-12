@@ -380,14 +380,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
      * off a waveOut completion event so we wake exactly when a buffer frees. */
     timeBeginPeriod(1);
 
-    /* A CPU-bound DOS game (e.g. DOOM) pins the CPU and starves this user-mode
-     * renderer, which is what makes the OPL3 audio choppy. Run at realtime
-     * priority so we preempt the game the instant a buffer needs refilling.
-     * This is safe: the loop below blocks on the waveOut event and only runs a
-     * few ms per 10 ms buffer, so it never hogs the CPU when idle. */
-    SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
-
     load_settings();
     OPL3_Reset(&chip, RATE);
 
@@ -432,6 +424,15 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
         apply_gain(bufs[i], FRAMES * 2);
         waveOutWrite(hwo, &hdr[i], sizeof(WAVEHDR));
     }
+
+    /* Devices are open and buffers primed - now raise to realtime for the
+     * steady loop. A CPU-bound DOS game (e.g. DOOM) pins the CPU and would
+     * starve this renderer, making the OPL3 audio choppy; realtime lets us
+     * preempt the game the instant a buffer needs refilling. Safe here: the
+     * loop blocks on the waveOut event and runs only a few ms per 10 ms
+     * buffer, and there are no more blocking open calls past this point. */
+    SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 
     /* steady state: the event fires each time waveOut finishes a buffer; wake,
      * drain the newest register writes, regenerate every freed buffer and
