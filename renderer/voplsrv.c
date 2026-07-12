@@ -174,18 +174,27 @@ static void render_buffer(short *dst)
  * idle renderer would cost as much CPU as a playing one. OPL3 silence is
  * digital zero, so gate on OUTPUT, not on register-write inactivity
  * (a sustained note can sound forever without further writes):
- * after IDLE_AFTER consecutive all-zero buffers with nothing drained from
- * the ring, stop synthesizing and just requeue the buffers, which by then
- * all hold zeros (IDLE_AFTER >= NBUF guarantees it). Resume on the first
- * drained register write - games start with detection/init writes well
- * before the first audible note, so no music onset is ever clipped. */
-#define IDLE_AFTER 48                      /* ~0.5 s of silent buffers */
+ * after IDLE_AFTER consecutive near-silent buffers with nothing drained from
+ * the ring, stop synthesizing and emit zeroed buffers instead. Resume on the
+ * first drained register write - games start with detection/init writes well
+ * before the first audible note, so no music onset is ever clipped.
+ *
+ * "Near-silent", not "all zero": a keyed-off OPL3 does NOT settle to exact
+ * digital zero - Nuked leaves a tiny DC/rounding residual (a few units per
+ * sounding operator; ~+-36 worst case with all 18 channels released). An
+ * exact-zero test therefore never fires once any note has played, so the
+ * renderer would synthesize forever at full CPU. Treat anything below
+ * SILENCE_EPS - far under -50 dBFS, inaudible, and well below any real
+ * sounding note's level - as silence. Checked on the raw chip output before
+ * the volume boost, so the threshold is independent of the volume setting. */
+#define IDLE_AFTER  48                     /* ~0.5 s of near-silent buffers */
+#define SILENCE_EPS 64                     /* |sample| below this = silent   */
 
 static int buf_silent(const short *p, int n)
 {
     int i;
     for (i = 0; i < n; i++)
-        if (p[i]) return 0;
+        if (p[i] > SILENCE_EPS || p[i] < -SILENCE_EPS) return 0;
     return 1;
 }
 
@@ -238,7 +247,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     HANDLE       hev;
     int   i;
     int   idle    = 0;                     /* skipping synthesis (chip silent) */
-    DWORD silence = 0;                     /* consecutive all-zero buffers     */
+    DWORD silence = 0;                     /* consecutive near-silent buffers  */
 
     hvxd = CreateFile("\\\\.\\VOPL3", 0, 0, NULL, 0, FILE_FLAG_DELAYED_ERROR, NULL);
     if (hvxd == INVALID_HANDLE_VALUE) {
@@ -333,18 +342,19 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
                     silence = 0;
                 }
                 if (!idle) {
+                    int silent;
                     render_buffer(bufs[i]);
+                    silent = buf_silent(bufs[i], FRAMES * 2);  /* raw output */
                     apply_gain(bufs[i], FRAMES * 2);
-                    if (n == 0 && pq_head == pq_tail
-                               && buf_silent(bufs[i], FRAMES * 2)) {
+                    if (n == 0 && pq_head == pq_tail && silent) {
                         if (++silence >= IDLE_AFTER) idle = 1;
                     } else if (n == 0) {
                         silence = 0;           /* still sounding (decay etc.) */
                     }
                 } else {
-                    stream_pos += FRAMES;      /* time passes while idle */
+                    ZeroMemory(bufs[i], FRAMES * 4);  /* true silence while idle */
+                    stream_pos += FRAMES;             /* time passes while idle */
                 }
-                /* if idle: buffer already holds zeros - requeue it as-is */
                 hdr[i].dwFlags &= ~WHDR_DONE;
                 waveOutWrite(hwo, &hdr[i], sizeof(WAVEHDR));
             }
