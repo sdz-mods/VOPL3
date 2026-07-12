@@ -2,5 +2,7 @@ REGEDIT4
 
 [-HKEY_LOCAL_MACHINE\System\CurrentControlSet\Services\VxD\VOPL3]
 
+[-HKEY_LOCAL_MACHINE\Software\VOPL3]
+
 [HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Run]
 "VOPL3Renderer"=-

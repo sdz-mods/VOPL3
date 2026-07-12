@@ -7,8 +7,8 @@ ECHO   This installer will:
 ECHO     1. install VOPL3.VXD          (loads at boot, traps AdLib/OPL ports)
 ECHO     2. install the OPL3 renderer  (C:\VOPL3\VOPLSRV.EXE, autostarts;
 ECHO        you pick the standard or the CPU-friendly "fast" build)
-ECHO     3. patch SBEMUL.SYS so it stops claiming FM port 388 but keeps its
-ECHO        digital audio + MIDI. The original is backed up to SBEMUL.SYS.orig
+ECHO     3. patch SBEMUL.SYS so it stops claiming FM port 388 (digital audio
+ECHO        stays). You also choose FM-only or FM+MIDI. Original backed up.
 ECHO.
 ECHO   Press Ctrl+C to abort, or
 PAUSE
@@ -44,10 +44,28 @@ IF NOT EXIST C:\VOPL3\VOPL3.INI COPY VOPL3.INI C:\VOPL3\VOPL3.INI >NUL
 ECHO [3/4] Registering VOPL3 (boot VxD + renderer autostart) ...
 REGEDIT /S INSTALL.REG
 
-ECHO [4/4] Patching SBEMUL.SYS ...
+ECHO [4/4] DOS-game MIDI (MPU-401) + patching SBEMUL.SYS ...
+ECHO.
+ECHO   MIDI handling:
+ECHO     1 = FM only    - leave SBEMUL's MIDI as-is (plays the Microsoft GS
+ECHO                      Wavetable synth, as before). Recommended default.
+ECHO     2 = FM + MIDI  - VOPL3 also takes over MIDI, so DOS-game General MIDI
+ECHO                      can be routed to ANY installed synth/device via the
+ECHO                      Windows MIDI Mapper (see README - needs a bit more
+ECHO                      setup, and replaces SBEMUL's MIDI).
+CHOICE /C:12 Choose MIDI handling
+IF ERRORLEVEL 2 GOTO midiyes
+
 SBPATCH.EXE C:\WINDOWS\SYSTEM32\DRIVERS\SBEMUL.SYS
 IF ERRORLEVEL 1 GOTO sberr
+GOTO complete
 
+:midiyes
+SBPATCH.EXE C:\WINDOWS\SYSTEM32\DRIVERS\SBEMUL.SYS midi
+IF ERRORLEVEL 1 GOTO sberr
+REGEDIT /S MIDION.REG
+
+:complete
 ECHO.
 ECHO   ===================  INSTALL COMPLETE  ===================
 ECHO   Please REBOOT now.
@@ -56,6 +74,8 @@ ECHO       Music     = AdLib (or OPL3)
 ECHO       Sound FX  = Sound Blaster
 ECHO   You get OPL3 music (VOPL3) AND digital effects (SBEMUL) together.
 ECHO   The renderer C:\VOPL3\VOPLSRV.EXE starts automatically at login.
+ECHO   If you chose FM+MIDI: set the MIDI device in the Multimedia control
+ECHO   panel (or C:\VOPL3\VOPL3.INI) - run MIDILIST.EXE to list devices.
 GOTO end
 
 :sberr
@@ -75,8 +95,8 @@ GOTO end
 
 :copyerr
 ECHO   ERROR: could not copy files. Run this from the folder that contains
-ECHO   INSTALL.BAT, VOPL3.VXD, VOPLSRV.EXE, VOPLFAST.EXE, SBPATCH.EXE
-ECHO   and INSTALL.REG.
+ECHO   INSTALL.BAT, VOPL3.VXD, VOPLSRV.EXE, VOPLFAST.EXE, SBPATCH.EXE,
+ECHO   INSTALL.REG and MIDION.REG.
 
 :end
 ECHO.

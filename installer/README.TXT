@@ -20,6 +20,7 @@ INSTALL
       You choose between two builds with identical sound output:
         1 = Nuked OPL3 (reference), 2 = Nuked OPL3 fast (about half the
         CPU use - recommended, especially on slower machines),
+    - asks FM only vs FM + MIDI (see MIDI below; default FM only),
     - patches SBEMUL.SYS so it stops claiming FM port 388 (keeps digital+MIDI).
   Then REBOOT.
 
@@ -38,6 +39,18 @@ FM VOLUME
   chip's authentic digital level, which sounds quiet next to SBEMUL's digital
   sound.
 
+MIDI (optional - only if you chose FM + MIDI at install)
+  Normally DOS-game MIDI plays through SBEMUL's fixed synth (Microsoft GS
+  Wavetable). Choosing FM + MIDI makes VOPL3 take over MPU-401 MIDI and send
+  it through the Windows MIDI Mapper, so it can play on ANY installed synth or
+  device - a software synth (Roland VSC, Yamaha S-YXG50, ...), a hardware
+  wavetable, or an external module on a MIDI interface.
+    - Pick the target in Control Panel > Multimedia > MIDI, or set it in
+      C:\VOPL3\VOPL3.INI  [midi] device=  (65535 = MIDI Mapper (default), or a
+      device index). Run MIDILIST.EXE to list devices and their indices.
+    - FM + MIDI replaces SBEMUL's MIDI. FM only leaves it untouched.
+    - Only UART-mode MPU-401 is supported.
+
 UNINSTALL
   Run UNINSTALL.BAT (restores the original SBEMUL.SYS, removes VOPL3), reboot.
 
@@ -55,9 +68,11 @@ ABOUT THE SBEMUL PATCH
 FILES
   INSTALL.BAT / UNINSTALL.BAT   installer / uninstaller
   INSTALL.REG / UNINSTALL.REG   registry entries
+  MIDION.REG                    enables MIDI (applied if you choose FM + MIDI)
   SBPATCH.EXE                   the SBEMUL.SYS patcher
-  VOPL3.VXD                     OPL3 port-trap VxD
+  MIDILIST.EXE                  lists MIDI output devices (for FM + MIDI)
+  VOPL3.VXD                     OPL3 (+ optional MPU-401 MIDI) port-trap VxD
   VOPLSRV.EXE                   renderer, Nuked OPL3 backend (LGPL 2.1)
   VOPLFAST.EXE                  renderer, Nuked-OPL3-fast backend (LGPL 2.1)
                                 (the one you pick is installed as VOPLSRV.EXE)
-  VOPL3.INI                     renderer settings (FM volume)
+  VOPL3.INI                     renderer settings (FM volume, MIDI device)

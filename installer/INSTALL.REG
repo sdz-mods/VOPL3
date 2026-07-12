@@ -6,3 +6,6 @@ REGEDIT4
 
 [HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Run]
 "VOPL3Renderer"="C:\\VOPL3\\VOPLSRV.EXE"
+
+[HKEY_LOCAL_MACHINE\Software\VOPL3]
+"Midi"=dword:00000000

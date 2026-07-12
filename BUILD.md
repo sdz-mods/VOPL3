@@ -50,15 +50,19 @@ Run these from the repo root, in order:
 - **`renderer\build.ps1`** compiles `voplsrv.c` twice — once with Nuked OPL3
   (`nuked-opl3/opl3.c` → `voplsrv.exe`) and once with Nuked-OPL3-fast
   (`nuked-opl3-fast/opl3.c` → `voplfast.exe`; bit-exact output, ~2x less CPU) —
-  and links `winmm`. Both build as **GUI-subsystem** apps (`-l=nt_win`,
+  and links `winmm` + `advapi32` (the latter for the registry read that gates
+  the optional MIDI bridge). Both build as **GUI-subsystem** apps (`-l=nt_win`,
   `WinMain`) so they run hidden with no console window. Both are compiled with
   full optimization (`-otexan -6r -fp6`); Watcom's default is *no* optimization,
   which makes the synthesis ~2.3x slower — enough to peg a P3-class CPU.
-- **`installer\build.ps1`** builds `SBPATCH.EXE` from `SBPATCH.C` and assembles
-  `installer/dist/` — the VxD, both renderer builds, `SBPATCH.EXE`, and the
-  CRLF-normalized `INSTALL/UNINSTALL` `.BAT`/`.REG` + `README.TXT`. **`dist/` is
-  the folder you copy to the Win98/ME machine.** `INSTALL.BAT` asks which
-  renderer build to install; either one lands as `C:\VOPL3\VOPLSRV.EXE`.
+- **`installer\build.ps1`** builds `SBPATCH.EXE` from `SBPATCH.C` and
+  `MIDILIST.EXE` from `tests/MIDILIST.C`, then assembles `installer/dist/` — the
+  VxD, both renderer builds, `SBPATCH.EXE`, `MIDILIST.EXE`, and the
+  CRLF-normalized `INSTALL/UNINSTALL` `.BAT` + `.REG` (incl. `MIDION.REG`) +
+  `README.TXT` + `VOPL3.INI`. **`dist/` is the folder you copy to the Win98/ME
+  machine.** `INSTALL.BAT` asks which renderer build to install and whether to
+  enable MIDI (FM only vs FM + MIDI); the chosen renderer lands as
+  `C:\VOPL3\VOPLSRV.EXE`.
 
 Build outputs (`vxd/vopl3.vxd`, `renderer/voplsrv.exe`, `renderer/voplfast.exe`,
 `installer/dist/`) are not committed — the build is deterministic (apart from

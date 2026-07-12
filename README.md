@@ -5,7 +5,8 @@ A ring-0 port-trap **VxD** captures the OPL register writes a program makes (a D
 game, typically) and hands them to a user-mode renderer built around **Nuked
 OPL3**, which synthesizes the music and plays it through the normal Windows audio
 output — all while **coexisting** with Microsoft's SBEMUL so DOS games keep their
-digital sound effects and MIDI.
+digital sound effects (and MIDI). It can *optionally* also take over DOS-game
+**MPU-401 MIDI** and route it to any synth you choose (see **MIDI** below).
 
 ---
 
@@ -47,19 +48,23 @@ flowchart TD
     G["DOS game (Win9x DOS box)"]
 
     subgraph k["ring 0 (kernel)"]
-        VXD["VOPL3.VXD<br/>traps ports 0x388-0x38B (VMM Install_IO_Handler)<br/>keeps AdLib detection alive<br/>queues (reg, data) into a ring buffer"]
-        SB["SBEMUL.SYS<br/>digital audio + MPU-401 MIDI"]
+        VXD["VOPL3.VXD<br/>traps OPL ports 0x388-0x38B (VMM Install_IO_Handler)<br/>+ MPU-401 ports 0x330-0x331 in FM+MIDI mode<br/>keeps AdLib detection alive<br/>queues writes into ring buffers"]
+        SB["SBEMUL.SYS<br/>digital audio (+ MIDI in FM-only mode)"]
     end
 
     subgraph u["user mode"]
-        SRV["VOPLSRV.EXE (runs hidden)<br/>drains the ring<br/>Nuked OPL3 -> PCM @ 48 kHz<br/>waveOut (WAVE_MAPPER)"]
+        SRV["VOPLSRV.EXE (runs hidden)<br/>drains the rings<br/>FM: Nuked OPL3 -> PCM @ 48 kHz -> waveOut<br/>MIDI: parser -> midiOut"]
+        SYN["MIDI Mapper /<br/>any installed MIDI device"]
     end
 
     G -- "music = AdLib / OPL3<br/>OUT 0x388-0x38B" --> VXD
+    G -- "MIDI (FM+MIDI mode)<br/>OUT 0x330-0x331" --> VXD
     G -- "sound FX = Sound Blaster" --> SB
-    VXD -- "ring buffer<br/>(DeviceIoControl)" --> SRV
+    VXD -- "ring buffers<br/>(DeviceIoControl)" --> SRV
     SRV -- "OPL3 music" --> KMIX["KMIXER (software mixing)"]
-    SB -- "digital + MIDI" --> KMIX
+    SRV -- "MIDI stream" --> SYN
+    SYN -. "audio (software synths)" .-> KMIX
+    SB -- "digital (+ MIDI)" --> KMIX
     KMIX --> SPK["speakers"]
 ```
 
@@ -105,6 +110,29 @@ The patcher is deliberately careful: it validates the PE checksum before touchin
 anything, finds the FM-port table by byte pattern (so it works across Win98
 builds rather than a hardcoded offset), backs up the original as `SBEMUL.SYS.orig`.
 
+## MIDI (optional): routable DOS-game General MIDI
+
+By default VOPL3 does **FM only** and leaves SBEMUL's MPU-401 MIDI untouched —
+DOS-game MIDI keeps playing through SBEMUL's fixed target, the **Microsoft GS
+Wavetable** software synth. If you'd rather send that MIDI somewhere else,
+choose **FM + MIDI** at install and VOPL3 takes over the MPU-401 too:
+
+- The VxD traps the **MPU-401 ports 0x330/0x331** (UART mode) and captures the
+  game's raw MIDI byte stream; the renderer re-emits it with `midiOut` to the
+  **Windows MIDI Mapper** (or a specific device). So the music can go to **any
+  installed synth or MIDI device** — a software synth (Roland VSC, Yamaha
+  S‑YXG50, …), a hardware wavetable, or an external module on a MIDI interface
+  — instead of only the GS synth. (SBEMUL's kernel MIDI is hardwired to that
+  one synth; this is the way around it.)
+- Pick the target in **Control Panel → Multimedia → MIDI**, or set it directly
+  in `C:\VOPL3\VOPL3.INI` `[midi] device=` (`65535` = MIDI Mapper, the default;
+  or a device index). Run **`MIDILIST.EXE`** to list the devices and their
+  indices.
+- Choosing FM + MIDI means VOPL3 *replaces* SBEMUL's MIDI (SBPATCH also frees
+  0x330/0x331). Enablement is an install-time choice stored in the registry
+  (`HKLM\Software\VOPL3\Midi`); in FM-only mode nothing MIDI-related is touched.
+  Scope is **UART mode**; MPU-401 intelligent mode is not emulated.
+
 ## What's used from other projects
 
 | Component | Origin | License | Role |
@@ -138,13 +166,15 @@ their own licenses:
 vxd/         VOPL3.VXD — ring-0 port-trap driver (+ build.ps1, patches wlink output)
 renderer/    the user-mode renderer (hidden background app); built twice:
              VOPLSRV.EXE (Nuked OPL3) and VOPLFAST.EXE (Nuked-OPL3-fast)
-installer/   INSTALL.BAT / UNINSTALL.BAT, SBPATCH.C (the SBEMUL patcher), README,
-             and build.ps1 that assembles the shippable dist/ package
+installer/   INSTALL.BAT / UNINSTALL.BAT, SBPATCH.C (the SBEMUL patcher),
+             *.REG (incl. MIDION.REG for the FM+MIDI choice), README, and
+             build.ps1 that assembles the shippable dist/ package
 nuked-opl3/  Nuked OPL3 (bundled, LGPL 2.1)
 nuked-opl3-fast/  Nuked-OPL3-fast, tgies' bit-exact ~2x-faster fork (LGPL 2.1)
 ref/         vmdisp9x fixlink + MIT license (the VxD glue headers vmm.h/io32.h/
              code32.h are bundled into vxd/)
-tests/       DOS + host test programs (AdLib/OPL and Sound Blaster probes)
+tests/       DOS + host test programs (AdLib/OPL and Sound Blaster probes;
+             MIDILIST.C lists MIDI output devices for the FM+MIDI option)
 BUILD.md     build prerequisites and step-by-step
 ```
 
@@ -157,7 +187,8 @@ BUILD.md     build prerequisites and step-by-step
 - **Install on the Win98/ME machine:** copy the `dist/` folder over and run
   `INSTALL.BAT` from a DOS box — it installs the VxD (boot-loaded), installs the
   renderer (autostarts hidden; you pick the Nuked or the CPU-friendly fast
-  build), and patches `SBEMUL.SYS`. Reboot. In your DOS
+  build), lets you choose **FM only** or **FM + MIDI** (see **MIDI** above), and
+  patches `SBEMUL.SYS`. Reboot. In your DOS
   game set **Music = AdLib/OPL3** and **Sound FX = Sound Blaster**. `UNINSTALL.BAT`
   restores the original SBEMUL and removes VOPL3.
 

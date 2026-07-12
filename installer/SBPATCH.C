@@ -20,6 +20,10 @@ typedef unsigned char  BYTE;
 
 static const BYTE FM_OFF[16] = {0x88,3,0,0, 0x89,3,0,0, 0x8A,3,0,0, 0x8B,3,0,0};
 static const BYTE FM_NEW[16] = {0xA0,2,0,0, 0xA1,2,0,0, 0xA2,2,0,0, 0xA3,2,0,0};
+/* MPU-401 MIDI ports 330/331 -> unused 2A4/2A5, so VOPL3 owns the MIDI ports
+ * and its routable MIDI bridge replaces SBEMUL's fixed kernel GS synth. */
+static const BYTE MI_OFF[8]  = {0x30,3,0,0, 0x31,3,0,0};
+static const BYTE MI_NEW[8]  = {0xA4,2,0,0, 0xA5,2,0,0};
 
 /* Print the driver's file version by locating the VS_FIXEDFILEINFO signature
  * (0xFEEF04BD) in the version resource. FileVersion is two DWORDs after the
@@ -58,14 +62,32 @@ static DWORD pe_checksum(BYTE *d, long len, long co)
     return sum + (DWORD)len;
 }
 
+/* find a byte pattern; returns file offset (or -1) and sets *hits to the count */
+static long find_once(BYTE *d, long len, const BYTE *pat, int patlen, int *hits)
+{
+    long i, at = -1; *hits = 0;
+    for (i = 0; i <= len - patlen; i++)
+        if (memcmp(d + i, pat, patlen) == 0) { at = i; (*hits)++; }
+    return at;
+}
+
 int main(int argc, char **argv)
 {
-    const char *path = (argc > 1) ? argv[1]
-                                  : "C:\\WINDOWS\\SYSTEM32\\DRIVERS\\SBEMUL.SYS";
-    FILE *f; BYTE *d; long len, pe, co, at = -1; int i, hits; DWORD stored, calc;
+    const char *path = NULL;
+    int   do_midi = 0;
+    FILE *f; BYTE *d; long len, pe, co, at; int i, hits; DWORD stored, calc;
+    int   fm_moved = 0, midi_moved = 0, need_fm, need_midi, changed = 0;
     char bak[300];
 
-    printf("VOPL3 SBEMUL patcher\n  target: %s\n", path);
+    /* args: [path-to-SBEMUL.SYS] [midi]   ("midi" = also free 0x330/0x331) */
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "midi") == 0) do_midi = 1;
+        else if (!path) path = argv[i];
+    }
+    if (!path) path = "C:\\WINDOWS\\SYSTEM32\\DRIVERS\\SBEMUL.SYS";
+
+    printf("VOPL3 SBEMUL patcher\n  target: %s\n  mode: %s\n",
+           path, do_midi ? "FM + MIDI" : "FM only");
 
     f = fopen(path, "rb");
     if (!f) { printf("ERROR: cannot open file.\n"); return 1; }
@@ -87,13 +109,21 @@ int main(int argc, char **argv)
     printf("  PE checksum: stored=0x%08lX computed=0x%08lX %s\n",
            stored, calc, (stored == calc) ? "(valid)" : "(MISMATCH)");
 
-    /* already patched? */
-    for (i = 0; i <= len - 16; i++)
-        if (memcmp(d + i, FM_NEW, 16) == 0) {
-            printf("Already patched (FM ports moved to 2A0). Nothing to do.\n");
-            free(d); return 0;
-        }
+    /* current state: which ports (if any) are already relocated */
+    for (i = 0; i <= len - 16; i++) if (memcmp(d + i, FM_NEW, 16) == 0) fm_moved   = 1;
+    for (i = 0; i <= len - 8;  i++) if (memcmp(d + i, MI_NEW, 8)  == 0) midi_moved = 1;
+    need_fm   = !fm_moved;
+    need_midi = do_midi && !midi_moved;
 
+    if (!need_fm && !need_midi) {
+        printf("Already patched for this mode (FM moved%s). Nothing to do.\n",
+               midi_moved ? " + MIDI moved" : "");
+        free(d); return 0;
+    }
+
+    /* A validly-patched-by-us file has a valid checksum, as does a pristine
+     * one; only refuse if the checksum is genuinely broken (corrupt, or
+     * modified by something else that didn't fix it). */
     if (stored != calc) {
         printf("ERROR: PE checksum is not valid - file is corrupt or was modified\n"
                "       by something else. Refusing to patch. Restore a clean\n"
@@ -101,27 +131,42 @@ int main(int argc, char **argv)
         free(d); return 3;
     }
 
-    /* find the FM port table by pattern, must be exactly once */
-    hits = 0;
-    for (i = 0; i <= len - 16; i++)
-        if (memcmp(d + i, FM_OFF, 16) == 0) { at = i; hits++; }
-    if (hits == 0) { printf("ERROR: FM port table (388-38B) not found - unrecognised\n"
-                            "       SBEMUL build. Not patching (safe).\n"); free(d); return 4; }
-    if (hits > 1)  { printf("ERROR: FM port table found %d times (ambiguous). Not patching.\n", hits); free(d); return 4; }
-    printf("  found FM port table at file offset 0x%lX\n", at);
-
-    /* back up original */
-    strcpy(bak, path); strcat(bak, ".orig");
-    f = fopen(bak, "rb");
-    if (f) { fclose(f); printf("  (backup already exists: %s)\n", bak); }
-    else {
-        f = fopen(bak, "wb");
-        if (f) { fwrite(d, 1, len, f); fclose(f); printf("  backed up original -> %s\n", bak); }
-        else   { printf("  WARNING: could not write backup file.\n"); }
+    /* back up the original before the FIRST modification */
+    if (need_fm || (need_midi && !fm_moved)) {
+        strcpy(bak, path); strcat(bak, ".orig");
+        f = fopen(bak, "rb");
+        if (f) { fclose(f); printf("  (backup already exists: %s)\n", bak); }
+        else {
+            f = fopen(bak, "wb");
+            if (f) { fwrite(d, 1, len, f); fclose(f); printf("  backed up original -> %s\n", bak); }
+            else   { printf("  WARNING: could not write backup file.\n"); }
+        }
     }
 
-    /* patch + recompute checksum */
-    memcpy(d + at, FM_NEW, 16);
+    /* FM ports 388-38B -> 2A0-2A3 (required; must match exactly once) */
+    if (need_fm) {
+        at = find_once(d, len, FM_OFF, 16, &hits);
+        if (hits == 0) { printf("ERROR: FM port table (388-38B) not found - unrecognised\n"
+                                "       SBEMUL build. Not patching (safe).\n"); free(d); return 4; }
+        if (hits > 1)  { printf("ERROR: FM port table found %d times (ambiguous). Not patching.\n", hits); free(d); return 4; }
+        memcpy(d + at, FM_NEW, 16); changed = 1;
+        printf("  FM   table at 0x%lX -> 388-38B moved to 2A0-2A3\n", at);
+    }
+
+    /* MPU-401 MIDI ports 330/331 -> 2A4/2A5 (only in FM+MIDI mode; best-effort:
+     * if this build's MIDI table isn't found, FM still gets patched). */
+    if (need_midi) {
+        at = find_once(d, len, MI_OFF, 8, &hits);
+        if (hits == 1) { memcpy(d + at, MI_NEW, 8); changed = 1;
+                         printf("  MIDI table at 0x%lX -> 330/331 moved to 2A4/2A5\n", at); }
+        else if (hits == 0) printf("  NOTE: MIDI port table (330/331) not found - SBEMUL MIDI left as-is.\n");
+        else                printf("  NOTE: MIDI port table found %d times (ambiguous) - left as-is.\n", hits);
+    }
+
+    if (!changed) {           /* e.g. FM+MIDI asked but MIDI table absent and FM already moved */
+        printf("Nothing changed.\n"); free(d); return 0;
+    }
+
     calc = pe_checksum(d, len, co);
     d[co] = (BYTE)calc; d[co+1] = (BYTE)(calc>>8); d[co+2] = (BYTE)(calc>>16); d[co+3] = (BYTE)(calc>>24);
 
@@ -130,7 +175,6 @@ int main(int argc, char **argv)
     if (fwrite(d, 1, len, f) != (size_t)len) { printf("ERROR: write failed!\n"); fclose(f); free(d); return 5; }
     fclose(f); free(d);
 
-    printf("SUCCESS: SBEMUL.SYS patched (388-38B -> 2A0-2A3, new checksum 0x%08lX).\n"
-           "         Reboot for it to take effect.\n", calc);
+    printf("SUCCESS: SBEMUL.SYS patched (new checksum 0x%08lX). Reboot to apply.\n", calc);
     return 0;
 }

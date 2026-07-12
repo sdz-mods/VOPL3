@@ -28,8 +28,14 @@ try {
     Copy-Item (Join-Path $root 'nuked-opl3\LICENSE')    (Join-Path $dist 'NUKED-OPL3-LICENSE.txt') -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $root 'nuked-opl3-fast\LICENSE') (Join-Path $dist 'NUKED-OPL3-FAST-LICENSE.txt') -Force -ErrorAction SilentlyContinue
 
+    # MIDILIST.EXE (lists MIDI output devices, for the FM+MIDI [midi] device= setting)
+    & wcl386.exe -q -bt=nt -l=nt (Join-Path $root 'tests\MIDILIST.C') winmm.lib '-fe=MIDILIST.EXE'
+    if ($LASTEXITCODE) { throw "MIDILIST build failed ($LASTEXITCODE)" }
+    Move-Item MIDILIST.EXE (Join-Path $dist 'MIDILIST.EXE') -Force
+    Remove-Item MIDILIST.OBJ -ErrorAction SilentlyContinue
+
     # 3. copy the runtime text files, normalised to CRLF for DOS
-    foreach ($t in 'INSTALL.BAT','UNINSTALL.BAT','INSTALL.REG','UNINSTALL.REG','README.TXT','VOPL3.INI') {
+    foreach ($t in 'INSTALL.BAT','UNINSTALL.BAT','INSTALL.REG','UNINSTALL.REG','MIDION.REG','README.TXT','VOPL3.INI') {
         $src = Join-Path $PSScriptRoot $t
         $dst = Join-Path $dist $t
         $c = ([IO.File]::ReadAllText($src) -replace "`r`n","`n") -replace "`n","`r`n"

@@ -100,8 +100,14 @@ struct vstate {
     DWORD reads_388, writes_seen;
     DWORD nonbyte;             /* non-byte I/O ops punted to Simulate_IO */
     DWORD ring_head, ring_tail, ring_lost;
-    DWORD ring_addr;           /* VMM-heap ring (allocated at init) */
+    DWORD ring_addr;           /* VMM-heap OPL ring (allocated at init) */
     BYTE  opl_reg[512];
+    /* ---- MPU-401 (MIDI) ---- */
+    DWORD mpu_uart;            /* 1 = UART mode entered                   */
+    DWORD mpu_ack;             /* pending ACK byte to be read (0 = none)  */
+    DWORD midi_head, midi_tail, midi_lost;
+    DWORD midi_addr;           /* VMM-heap MIDI byte ring                 */
+    DWORD midi_trapped;        /* 1 once 0x330/0x331 handlers installed   */
 };
 static struct vstate S = { 0x4C504F56 };   /* 'VOPL' */
 
@@ -298,6 +304,51 @@ DWORD __stdcall opl_read(DWORD port)
     return (DWORD)opl_status;
 }
 
+/* ===================== MPU-401 (MIDI) UART emulation =====================
+ * Ports 0x330 (data) / 0x331 (status+command). We emulate ONLY UART ("dumb")
+ * mode as a plain byte bridge: every data byte written in UART mode is a raw
+ * MIDI byte, pushed to the MIDI ring for the user-mode renderer to send via
+ * midiOut. The tiny handshake (reset / enter-UART, each ACK'd with 0xFE) is
+ * emulated so games detect the MPU.
+ *
+ * Status byte (read of 0x331):
+ *   bit 0x40 (DRR) = 1 -> NOT ready to accept a write. We consume instantly,
+ *                        so always 0 (ready).
+ *   bit 0x80 (DSR) = 1 -> NO data available to read. 0 only while an ACK byte
+ *                        is pending. (We do not do MIDI-IN.)
+ */
+#define MIDI_RING_SIZE 4096               /* power of two; heap-allocated */
+
+/* __stdcall so the naked trampoline can push args on the stack */
+void __stdcall mpu_write(DWORD port, DWORD data)
+{
+    BYTE d = (BYTE)data;
+
+    if (port & 1) {                       /* 0x331: command */
+        if (d == 0xFF)      { S.mpu_uart = 0; S.mpu_ack = 0xFE; } /* reset  */
+        else if (d == 0x3F) { S.mpu_uart = 1; S.mpu_ack = 0xFE; } /* ->UART */
+        else                {                 S.mpu_ack = 0xFE; } /* ack rest */
+        return;
+    }
+    /* 0x330: data */
+    if (S.mpu_uart && S.midi_addr) {      /* UART mode: this is a MIDI byte */
+        ((BYTE *)S.midi_addr)[S.midi_head & (MIDI_RING_SIZE - 1)] = d;
+        S.midi_head++;
+    }
+}
+
+DWORD __stdcall mpu_read(DWORD port)
+{
+    if (port & 1)                         /* 0x331: status */
+        return S.mpu_ack ? 0x00 : 0x80;   /* ready to write; data iff ACK   */
+    /* 0x330: data - hand back the pending ACK, then clear it */
+    {
+        DWORD b = S.mpu_ack;
+        S.mpu_ack = 0;
+        return b;
+    }
+}
+
 /* ===================== I/O trap trampolines =====================
  * VMM Install_IO_Handler callback convention:
  *   EAX = data (for OUT), EBX = VM handle, ECX = I/O type,
@@ -355,15 +406,55 @@ void __declspec(naked) io_trap(void)
     }
 }
 
+/* MPU-401 trap trampoline - same convention as io_trap, calls mpu_read/write.
+ * MPU access is byte-wide; non-byte ops are punted to Simulate_IO as well. */
+void __declspec(naked) mpu_trap(void)
+{
+    _asm {
+        cmp  ecx, 4
+        je   _out
+        test ecx, ecx
+        jz   _in
+        pushad
+        call count_nonbyte
+        popad
+        int  20h
+        dw   0x8094           /* 0x8000 | VMM__Simulate_IO (148) */
+        dw   0x0001           /* VMM_DEVICE_ID */
+    _in:
+        push ebx
+        push ecx
+        push edx
+        push edx              /* arg: port */
+        call mpu_read
+        pop  edx
+        pop  ecx
+        pop  ebx
+        ret
+    _out:
+        push ebx
+        push ecx
+        push edx
+        push eax              /* arg2: data */
+        push edx              /* arg1: port */
+        call mpu_write
+        pop  edx
+        pop  ecx
+        pop  ebx
+        ret
+    }
+}
+
 /* Install_IO_Handler that reports success (carry clear) / failure (carry set).
- * Returns 1 on success, 0 if the port is already hooked by someone else. */
-static DWORD io_install(DWORD port)
+ * Returns 1 on success, 0 if the port is already hooked by someone else.
+ * 'handler' is the naked trap trampoline to install on this port. */
+static DWORD io_install(DWORD port, DWORD handler)
 {
     DWORD ok = 0;
     _asm {
         push esi
         push edx
-        mov  esi, offset io_trap
+        mov  esi, handler
         mov  edx, port
     }
     VMMCall(Install_IO_Handler);
@@ -403,7 +494,8 @@ static void do_install(void)
     if (installed) return;
     installed = 1;
 
-    S.ring_addr = heap_alloc(RING_SIZE * 4);   /* the register-write ring */
+    S.ring_addr  = heap_alloc(RING_SIZE * 4);      /* OPL register ring   */
+    S.midi_addr  = heap_alloc(MIDI_RING_SIZE);     /* MPU-401 MIDI byte ring */
 
     ser_str("\nVOPL3: Device_Init, installing I/O handlers\n");
 
@@ -415,10 +507,14 @@ static void do_install(void)
      * (-> 388 -> here -> renderer) and FX=Sound Blaster (-> SBEMUL) to get
      * OPL3 music AND digital effects at the same time. */
 #ifndef VOPL3_NOINSTALL   /* -DVOPL3_NOINSTALL builds a load-but-do-nothing VxD for A/B baseline tests */
-    r = io_install(0x388); ser_str("  388 "); ser_str(r ? "OK\n"   : "TAKEN\n");
-    r = io_install(0x389); ser_str("  389 "); ser_str(r ? "OK\n"   : "TAKEN\n");
-    r = io_install(0x38A); ser_str("  38A "); ser_str(r ? "OK\n"   : "TAKEN\n");
-    r = io_install(0x38B); ser_str("  38B "); ser_str(r ? "OK\n"   : "TAKEN\n");
+    r = io_install(0x388, (DWORD)io_trap);  ser_str("  388 "); ser_str(r ? "OK\n" : "TAKEN\n");
+    r = io_install(0x389, (DWORD)io_trap);  ser_str("  389 "); ser_str(r ? "OK\n" : "TAKEN\n");
+    r = io_install(0x38A, (DWORD)io_trap);  ser_str("  38A "); ser_str(r ? "OK\n" : "TAKEN\n");
+    r = io_install(0x38B, (DWORD)io_trap);  ser_str("  38B "); ser_str(r ? "OK\n" : "TAKEN\n");
+    /* MPU-401 MIDI (0x330/0x331) is trapped ON DEMAND, not here: the renderer
+     * enables it via IOCTL_VOPL3_MIDI_ENABLE only when the user chose FM+MIDI
+     * at install (registry Midi=1) AND SBPATCH freed the ports from SBEMUL.
+     * Trapping at boot would steal 0x330 from SBEMUL even in FM-only mode. */
 #else
     (void)r; ser_str("  (NOINSTALL build: no ports trapped)\n");
 #endif
@@ -451,8 +547,10 @@ void __stdcall Device_Exit_proc(DWORD VM)
 /* ===================== Win32 DeviceIoControl bridge =====================
  * The user-mode renderer opens "\\.\VOPL3" and polls IOCTL_VOPL3_DRAIN to
  * pull queued (reg<<8)|data words out of the ring. */
-#define IOCTL_VOPL3_DRAIN 0x1000    /* out: array of DWORD writes  */
-#define IOCTL_VOPL3_STAT  0x1001    /* out: [head, tail, lost]     */
+#define IOCTL_VOPL3_DRAIN       0x1000 /* out: array of DWORD OPL writes    */
+#define IOCTL_VOPL3_STAT        0x1001 /* out: [head,tail,lost,...]         */
+#define IOCTL_VOPL3_MIDI_DRAIN  0x1002 /* out: raw MPU-401 MIDI bytes        */
+#define IOCTL_VOPL3_MIDI_ENABLE 0x1003 /* start trapping 0x330/0x331 (once)  */
 
 DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params)
 {
@@ -462,6 +560,15 @@ DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params
     switch (params->dwIoControlCode) {
         case DIOC_OPEN:              /* CreateFile("\\.\VOPL3") */
         case DIOC_CLOSEHANDLE:
+            rc = 0;
+            break;
+
+        case IOCTL_VOPL3_MIDI_ENABLE:   /* renderer: user chose FM+MIDI */
+            if (!S.midi_trapped) {
+                io_install(0x330, (DWORD)mpu_trap);
+                io_install(0x331, (DWORD)mpu_trap);
+                S.midi_trapped = 1;
+            }
             rc = 0;
             break;
 
@@ -485,14 +592,43 @@ DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params
             break;
         }
 
+        case IOCTL_VOPL3_MIDI_DRAIN: {
+            DWORD avail = S.midi_head - S.midi_tail;    /* unsigned wrap-safe */
+            DWORD room  = params->cbOutBuffer;          /* raw bytes out      */
+            BYTE *dst   = (BYTE *)params->lpOutBuffer;
+            BYTE *mring = (BYTE *)S.midi_addr;
+            DWORD i;
+            if (!S.midi_addr) { rc = 0; break; }
+            if (avail > MIDI_RING_SIZE) {               /* producer overran us */
+                S.midi_lost += (avail - MIDI_RING_SIZE);
+                S.midi_tail  = S.midi_head - MIDI_RING_SIZE;
+                avail        = MIDI_RING_SIZE;
+            }
+            if (avail > room) avail = room;
+            for (i = 0; i < avail; i++)
+                dst[i] = mring[(S.midi_tail + i) & (MIDI_RING_SIZE - 1)];
+            S.midi_tail += avail;
+            if (params->lpcbBytesReturned)
+                *(DWORD *)params->lpcbBytesReturned = avail;
+            rc = 0;
+            break;
+        }
+
         case IOCTL_VOPL3_STAT:
             if (params->cbOutBuffer >= 12) {
                 DWORD nout = 12;
                 out[0] = ring_head; out[1] = ring_tail; out[2] = ring_lost;
-                if (params->cbOutBuffer >= 20) {   /* extended stats */
+                if (params->cbOutBuffer >= 20) {   /* extended: OPL */
                     out[3] = writes_seen;
                     out[4] = S.nonbyte;
                     nout = 20;
+                }
+                if (params->cbOutBuffer >= 36) {   /* extended: MPU-401/MIDI */
+                    out[5] = S.midi_head;          /* total MIDI bytes captured */
+                    out[6] = S.midi_tail;
+                    out[7] = S.midi_lost;
+                    out[8] = S.mpu_uart;           /* in UART mode? */
+                    nout = 36;
                 }
                 if (params->lpcbBytesReturned)
                     *(DWORD *)params->lpcbBytesReturned = nout;

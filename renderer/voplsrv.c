@@ -1,9 +1,12 @@
-/* voplsrv.exe - OPL3 renderer for VOPL3.VXD (Win9x, Win32 GUI-subsystem app)
+/* voplsrv.exe - OPL3 + MIDI renderer for VOPL3.VXD (Win9x GUI-subsystem app)
  *
- * Opens \\.\VOPL3, polls the VxD's ring buffer for trapped OPL register
- * writes, feeds them to Nuked OPL3, and plays the result through waveOut.
- * KMIXER software-mixes it with SBEMUL's digital audio, so no changes to
- * the sound driver are needed.
+ * Opens \\.\VOPL3 and services two things the VxD traps for DOS programs:
+ *   - OPL3 FM: polls the register-write ring, feeds Nuked OPL3, plays via
+ *     waveOut (KMIXER mixes it with SBEMUL's digital audio - no sound-driver
+ *     changes needed);
+ *   - MPU-401 MIDI: drains the captured MIDI byte stream and re-emits it via
+ *     midiOut to the MIDI Mapper (or a chosen device), so DOS MIDI reaches
+ *     ANY installed synth/hardware instead of SBEMUL's fixed kernel GS synth.
  *
  * It is a GUI-subsystem app (WinMain, no console) so it runs silently in the
  * background - only errors pop up a message box. It owns one hidden window,
@@ -23,9 +26,12 @@
                                /* scheduling gaps while DOOM hogs  */
                                /* the CPU); music latency is fine  */
 #define DRAINMAX  8192         /* max writes drained per poll      */
+#define MIDIMAX   4096         /* max MIDI bytes drained per poll   */
 
-#define IOCTL_VOPL3_DRAIN 0x1000
-#define IOCTL_VOPL3_STAT  0x1001
+#define IOCTL_VOPL3_DRAIN       0x1000
+#define IOCTL_VOPL3_STAT        0x1001
+#define IOCTL_VOPL3_MIDI_DRAIN  0x1002
+#define IOCTL_VOPL3_MIDI_ENABLE 0x1003
 
 #ifndef FILE_FLAG_DELAYED_ERROR
 #define FILE_FLAG_DELAYED_ERROR 0x10000000
@@ -38,6 +44,11 @@ static WAVEHDR   hdr[NBUF];
 static short     bufs[NBUF][FRAMES * 2];
 static DWORD     drainbuf[DRAINMAX];
 static long      gain256 = 512;    /* output gain, 256 = 1.0x; set from INI */
+
+static HMIDIOUT  hmidi;            /* MPU-401 MIDI output (0 if unavailable) */
+static UINT      midi_dev = (UINT)MIDI_MAPPER;  /* device id; set from INI  */
+static int       midi_on;          /* user enabled FM+MIDI (registry Midi=1) */
+static BYTE      midibuf[MIDIMAX]; /* raw MIDI bytes drained from the VxD    */
 
 /* ---- FM volume boost ----
  * Nuked-OPL3 reproduces the OPL3's digital output level exactly, which
@@ -67,6 +78,96 @@ static void load_settings(void)
     pct = GetPrivateProfileInt("renderer", "volume", 200, ini);
     if (pct > 400) pct = 400;
     gain256 = ((long)pct << 8) / 100;
+
+    /* [midi] device: 0xFFFF (default) = MIDI Mapper (follows the user's
+     * control-panel choice); 0,1,2,... = a specific midiOut device index. */
+    { UINT d = GetPrivateProfileInt("midi", "device", 0xFFFF, ini);
+      midi_dev = (d == 0xFFFF) ? (UINT)MIDI_MAPPER : d; }
+}
+
+/* MIDI on/off is an install-time choice stored in the registry (set by the
+ * installer per the FM-only vs FM+MIDI prompt). Read it in USER MODE here -
+ * NOT in the VxD - so the kernel driver stays free of registry/string code,
+ * and so FM-only mode never even attempts to touch the MPU-401 ports, which
+ * the VxD would otherwise grab before SBEMUL at boot and thereby break
+ * SBEMUL's MIDI. */
+static int midi_enabled(void)
+{
+    HKEY  hk;
+    DWORD val = 0, cb = sizeof(val), type = 0;
+    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, "Software\\VOPL3", 0, KEY_READ, &hk)
+            != ERROR_SUCCESS)
+        return 0;
+    if (RegQueryValueEx(hk, "Midi", NULL, &type, (BYTE *)&val, &cb) != ERROR_SUCCESS)
+        val = 0;
+    RegCloseKey(hk);
+    return val ? 1 : 0;
+}
+
+/* ===================== MPU-401 MIDI bridge =====================
+ * The VxD's MPU-401 UART trap captures the DOS program's raw MIDI byte stream
+ * into a ring; we drain it and emit MIDI messages via midiOut to the MIDI
+ * Mapper (or a chosen device) - so DOS MIDI can go to ANY installed synth or
+ * hardware, not just SBEMUL's fixed kernel GS synth. Parser handles running
+ * status, SysEx, and system-realtime bytes interleaved mid-message. */
+static BYTE run_status;            /* current MIDI running status 0x80..0xEF */
+static BYTE mmsg[3];
+static int  mneed, mhave;
+static BYTE sysex[1024];
+static int  sxlen, in_sysex;
+
+static int midi_datacount(BYTE status)
+{
+    switch (status & 0xF0) {
+        case 0xC0: case 0xD0: return 1;   /* program change, channel pressure */
+        default:              return 2;   /* note/CC/bend/aftertouch          */
+    }
+}
+
+static void midi_short(BYTE s, BYTE d1, BYTE d2)
+{
+    if (hmidi) midiOutShortMsg(hmidi, (DWORD)s | ((DWORD)d1<<8) | ((DWORD)d2<<16));
+}
+
+static void midi_long(BYTE *p, int n)
+{
+    MIDIHDR h;
+    if (!hmidi) return;
+    ZeroMemory(&h, sizeof(h));
+    h.lpData = (char *)p; h.dwBufferLength = h.dwBytesRecorded = (DWORD)n;
+    if (midiOutPrepareHeader(hmidi, &h, sizeof(h)) == MMSYSERR_NOERROR) {
+        midiOutLongMsg(hmidi, &h, sizeof(h));
+        midiOutUnprepareHeader(hmidi, &h, sizeof(h));
+    }
+}
+
+/* feed one raw MPU-401 byte through the MIDI parser */
+static void midi_feed(BYTE b)
+{
+    if (b >= 0xF8) { midi_short(b, 0, 0); return; }   /* realtime: 1 byte, */
+                                                      /* keeps running status */
+    if (in_sysex) {
+        if (b == 0xF7)      { sysex[sxlen++] = b; midi_long(sysex, sxlen); in_sysex = 0; }
+        else if (b < 0x80)  { if (sxlen < (int)sizeof(sysex)) sysex[sxlen++] = b; }
+        else                { midi_long(sysex, sxlen); in_sysex = 0; midi_feed(b); }
+        return;
+    }
+    if (b == 0xF0)          { run_status = 0; in_sysex = 1; sxlen = 0; sysex[sxlen++] = b; return; }
+    if (b >= 0x80 && b <= 0xEF) { run_status = b; mmsg[0] = b; mhave = 0; mneed = midi_datacount(b); return; }
+    if (b >= 0xF1 && b <= 0xF7) { run_status = 0; return; }   /* system common */
+    /* data byte */
+    if (!run_status) return;
+    mmsg[1 + mhave] = b; mhave++;
+    if (mhave >= mneed) { midi_short(run_status, mmsg[1], mneed == 2 ? mmsg[2] : 0); mhave = 0; }
+}
+
+static void drain_midi(void)
+{
+    DWORD ret = 0, i;
+    if (!hmidi) return;
+    if (DeviceIoControl(hvxd, IOCTL_VOPL3_MIDI_DRAIN, NULL, 0,
+                        midibuf, sizeof(midibuf), &ret, NULL))
+        for (i = 0; i < ret; i++) midi_feed(midibuf[i]);
 }
 
 /* ---- timestamped write scheduling ----
@@ -210,6 +311,11 @@ static void audio_stop(void)
         waveOutClose(hwo);
         hwo = NULL;
     }
+    if (hmidi) {
+        midiOutReset(hmidi);               /* all-notes-off on the synth */
+        midiOutClose(hmidi);
+        hmidi = NULL;
+    }
     if (hvxd && hvxd != INVALID_HANDLE_VALUE) {
         CloseHandle(hvxd);
         hvxd = NULL;
@@ -285,6 +391,18 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     load_settings();
     OPL3_Reset(&chip, RATE);
 
+    /* MPU-401 MIDI bridge - only if the user chose FM+MIDI at install. Tell
+     * the VxD to start trapping 0x330/0x331, then open MIDI out (non-fatal:
+     * if the open fails, FM still works and MIDI just isn't routed). In
+     * FM-only mode we never touch the MIDI ports or open a synth at all. */
+    midi_on = midi_enabled();
+    if (midi_on) {
+        DWORD ret = 0;
+        DeviceIoControl(hvxd, IOCTL_VOPL3_MIDI_ENABLE, NULL, 0, NULL, 0, &ret, NULL);
+        if (midiOutOpen(&hmidi, midi_dev, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR)
+            hmidi = NULL;
+    }
+
     hev = CreateEvent(NULL, FALSE, FALSE, NULL);
 
     wf.wFormatTag      = WAVE_FORMAT_PCM;
@@ -334,6 +452,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
                 DispatchMessage(&m);
             }
         }
+        /* MPU-401 MIDI: drain + send every wake (~10 ms) regardless of FM
+         * buffer state, so MIDI plays even while the OPL chip is idle. */
+        drain_midi();
         for (i = 0; i < NBUF; i++) {
             if (hdr[i].dwFlags & WHDR_DONE) {
                 DWORD n = drain_events();
