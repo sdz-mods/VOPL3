@@ -21,6 +21,26 @@ typedef unsigned char  BYTE;
 static const BYTE FM_OFF[16] = {0x88,3,0,0, 0x89,3,0,0, 0x8A,3,0,0, 0x8B,3,0,0};
 static const BYTE FM_NEW[16] = {0xA0,2,0,0, 0xA1,2,0,0, 0xA2,2,0,0, 0xA3,2,0,0};
 
+/* Print the driver's file version by locating the VS_FIXEDFILEINFO signature
+ * (0xFEEF04BD) in the version resource. FileVersion is two DWORDs after the
+ * signature: MS = (major<<16)|minor, LS = (build<<16)|revision; SBEMUL uses
+ * major.minor.revision (the low word of LS) - 2222 = stock 98SE, 2223 = the
+ * Q269601 QFE hotfix. Robust: scans by signature, no hardcoded offset. */
+static void print_version(BYTE *d, long len)
+{
+    long i;
+    for (i = 0; i + 16 <= len; i += 4) {
+        if (d[i]==0xBD && d[i+1]==0x04 && d[i+2]==0xEF && d[i+3]==0xFE) {
+            unsigned minor = (unsigned)d[i+8]  | ((unsigned)d[i+9]<<8);
+            unsigned major = (unsigned)d[i+10] | ((unsigned)d[i+11]<<8);
+            unsigned rev   = (unsigned)d[i+12] | ((unsigned)d[i+13]<<8);
+            printf("  file version: %u.%u.%u\n", major, minor, rev);
+            return;
+        }
+    }
+    printf("  file version: (version resource not found)\n");
+}
+
 /* standard PE image checksum (checksum field treated as 0), + file length */
 static DWORD pe_checksum(BYTE *d, long len, long co)
 {
@@ -59,6 +79,8 @@ int main(int argc, char **argv)
     pe = (long)d[0x3c] | ((long)d[0x3d]<<8) | ((long)d[0x3e]<<16) | ((long)d[0x3f]<<24);
     if (pe < 0 || pe + 0x60 > len || d[pe] != 'P' || d[pe+1] != 'E') { printf("ERROR: no PE header.\n"); return 2; }
     co = pe + 24 + 64;
+
+    print_version(d, len);
 
     stored = (DWORD)d[co] | ((DWORD)d[co+1]<<8) | ((DWORD)d[co+2]<<16) | ((DWORD)d[co+3]<<24);
     calc   = pe_checksum(d, len, co);
