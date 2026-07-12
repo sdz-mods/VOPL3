@@ -10,8 +10,15 @@ ECHO        you pick the standard or the CPU-friendly "fast" build)
 ECHO     3. patch SBEMUL.SYS so it stops claiming FM port 388 (digital audio
 ECHO        stays). You also choose FM-only or FM+MIDI. Original backed up.
 ECHO.
+ECHO   (If VOPL3 is already installed, this will stop the running renderer
+ECHO   first. If that ever fails, run UNINSTALL.BAT + reboot, then this.)
+ECHO.
 ECHO   Press Ctrl+C to abort, or
 PAUSE
+
+ECHO.
+ECHO Stopping any running VOPL3 renderer ...
+IF EXIST VOPLSTOP.EXE VOPLSTOP.EXE
 
 ECHO.
 ECHO [1/4] Copying VOPL3.VXD to C:\WINDOWS\SYSTEM ...
@@ -96,7 +103,7 @@ GOTO end
 :copyerr
 ECHO   ERROR: could not copy files. Run this from the folder that contains
 ECHO   INSTALL.BAT, VOPL3.VXD, VOPLSRV.EXE, VOPLFAST.EXE, SBPATCH.EXE,
-ECHO   INSTALL.REG and MIDION.REG.
+ECHO   VOPLSTOP.EXE, INSTALL.REG and MIDION.REG.
 
 :end
 ECHO.

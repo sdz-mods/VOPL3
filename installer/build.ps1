@@ -13,11 +13,16 @@ New-Item -ItemType Directory -Force $dist | Out-Null
 
 Push-Location $PSScriptRoot
 try {
-    # 1. build the patcher (Win32 console, runs on Win98)
+    # 1. build the patcher + the renderer-stopper (Win32 console, run on Win98)
     & wcl386.exe -q -bt=nt -l=nt SBPATCH.C
     if ($LASTEXITCODE) { throw "SBPATCH build failed ($LASTEXITCODE)" }
     Move-Item SBPATCH.EXE (Join-Path $dist 'SBPATCH.EXE') -Force
     Remove-Item SBPATCH.OBJ -ErrorAction SilentlyContinue
+
+    & wcl386.exe -q -bt=nt -l=nt VOPLSTOP.C
+    if ($LASTEXITCODE) { throw "VOPLSTOP build failed ($LASTEXITCODE)" }
+    Move-Item VOPLSTOP.EXE (Join-Path $dist 'VOPLSTOP.EXE') -Force
+    Remove-Item VOPLSTOP.OBJ -ErrorAction SilentlyContinue
 
     # 2. stage the driver + both renderer builds + licenses under their
     #    install names (INSTALL.BAT lets the user pick a renderer; the chosen
