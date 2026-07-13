@@ -28,10 +28,11 @@
 #define DRAINMAX  8192         /* max writes drained per poll      */
 #define MIDIMAX   4096         /* max MIDI bytes drained per poll   */
 
-#define IOCTL_VOPL3_DRAIN       0x1000
-#define IOCTL_VOPL3_STAT        0x1001
-#define IOCTL_VOPL3_MIDI_DRAIN  0x1002
-#define IOCTL_VOPL3_MIDI_ENABLE 0x1003
+#define IOCTL_VOPL3_DRAIN        0x1000
+#define IOCTL_VOPL3_STAT         0x1001
+#define IOCTL_VOPL3_MIDI_DRAIN   0x1002
+#define IOCTL_VOPL3_MIDI_ENABLE  0x1003
+#define IOCTL_VOPL3_MIDI_VM_GONE 0x1004
 
 #ifndef FILE_FLAG_DELAYED_ERROR
 #define FILE_FLAG_DELAYED_ERROR 0x10000000
@@ -164,8 +165,13 @@ static void midi_feed(BYTE b)
 }
 
 /* Open the MIDI synth lazily (on the first byte since it went quiet), NOT at
- * startup and NOT continuously. */
-#define MIDI_CLOSE_MS 5000         /* release the synth after this idle gap */
+ * startup and NOT continuously.
+ *
+ * When to release it: primarily when the DOS box that was playing MIDI closes
+ * (the VxD flags that via IOCTL_VOPL3_MIDI_VM_GONE) - so the synth survives
+ * in-game musical gaps without losing its channel state. */
+#define MIDI_CLOSE_MS 30000        /* backstop: release after this quiet gap  */
+#define MIDI_RT_MS    2000         /* "MIDI recently flowing" window (priority) */
 
 static void midi_open(void)
 {
@@ -182,8 +188,14 @@ static void midi_open(void)
     }
 }
 
-/* Drain the VxD MIDI ring; open the synth on activity, release it after a
- * quiet gap. Called every loop wake (whether or not the synth is open). */
+static void midi_close(void)
+{
+    if (hmidi) { midiOutReset(hmidi); midiOutClose(hmidi); hmidi = NULL; }
+}
+
+/* Drain the VxD MIDI ring; open the synth on activity, release it when the
+ * game's DOS box closes (VM gone) or after the long backstop. Called every
+ * loop wake (whether or not the synth is open). */
 static void service_midi(void)
 {
     DWORD ret = 0, i;
@@ -195,10 +207,14 @@ static void service_midi(void)
         if (!hmidi) midi_open();
         for (i = 0; i < ret; i++) midi_feed(midibuf[i]);
         midi_last = GetTickCount();
-    } else if (hmidi && (GetTickCount() - midi_last) > MIDI_CLOSE_MS) {
-        midiOutReset(hmidi);
-        midiOutClose(hmidi);
-        hmidi = NULL;
+        return;
+    }
+    if (hmidi) {                               /* quiet right now - release? */
+        DWORD gone = 0, r = 0;
+        DeviceIoControl(hvxd, IOCTL_VOPL3_MIDI_VM_GONE, NULL, 0,
+                        &gone, sizeof(gone), &r, NULL);
+        if (gone || (GetTickCount() - midi_last) > MIDI_CLOSE_MS)
+            midi_close();
     }
 }
 
@@ -528,10 +544,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
                 waveOutWrite(hwo, &hdr[i], sizeof(WAVEHDR));
             }
         }
-        /* set priority from the combined state: realtime while FM plays (chip
-         * not idle) OR MIDI is flowing (synth open); normal when both idle. */
-        if ((!idle || hmidi) && !realtime)   go_realtime();
-        else if (idle && !hmidi && realtime) go_normal();
+        /* Priority from the combined state: realtime while FM plays (chip not
+         * idle) OR MIDI is actively flowing (a byte within MIDI_RT_MS); normal
+         * otherwise. Note this tracks MIDI ACTIVITY, not whether the synth is
+         * open - during an in-game gap the synth stays open but there is
+         * nothing to keep up with, so we drop to normal. */
+        { int busy = !idle || (GetTickCount() - midi_last) < MIDI_RT_MS;
+          if (busy && !realtime)      go_realtime();
+          else if (!busy && realtime) go_normal(); }
     }
     /* not reached */
 }

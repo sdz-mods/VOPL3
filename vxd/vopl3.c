@@ -108,6 +108,8 @@ struct vstate {
     DWORD midi_head, midi_tail, midi_lost;
     DWORD midi_addr;           /* VMM-heap MIDI byte ring                 */
     DWORD midi_trapped;        /* 1 once 0x330/0x331 handlers installed   */
+    DWORD midi_vm;             /* handle of the VM currently sending MIDI  */
+    DWORD midi_vm_gone;        /* set when that VM terminates (one-shot)   */
 };
 static struct vstate S = { 0x4C504F56 };   /* 'VOPL' */
 
@@ -320,7 +322,7 @@ DWORD __stdcall opl_read(DWORD port)
 #define MIDI_RING_SIZE 4096               /* power of two; heap-allocated */
 
 /* __stdcall so the naked trampoline can push args on the stack */
-void __stdcall mpu_write(DWORD port, DWORD data)
+void __stdcall mpu_write(DWORD port, DWORD data, DWORD vm)
 {
     BYTE d = (BYTE)data;
 
@@ -334,6 +336,8 @@ void __stdcall mpu_write(DWORD port, DWORD data)
     if (S.mpu_uart && S.midi_addr) {      /* UART mode: this is a MIDI byte */
         ((BYTE *)S.midi_addr)[S.midi_head & (MIDI_RING_SIZE - 1)] = d;
         S.midi_head++;
+        S.midi_vm = vm;                   /* remember who's playing MIDI, so we
+                                           * notice when its DOS box closes    */
     }
 }
 
@@ -435,9 +439,10 @@ void __declspec(naked) mpu_trap(void)
         push ebx
         push ecx
         push edx
+        push ebx              /* arg3: VM handle (who is writing) */
         push eax              /* arg2: data */
         push edx              /* arg1: port */
-        call mpu_write
+        call mpu_write        /* __stdcall(port, data, vm) */
         pop  edx
         pop  ecx
         pop  ebx
@@ -544,13 +549,25 @@ void __stdcall Device_Exit_proc(DWORD VM)
     ser_str("\n");
 }
 
+/* Called on Destroy_VM (a DOS box closing). If it's the VM that was sending
+ * MIDI, flag it so the renderer releases the synth immediately - the game is
+ * gone, not just pausing. */
+void __stdcall midi_vm_destroyed(DWORD vm)
+{
+    if (S.midi_vm && vm == S.midi_vm) {
+        S.midi_vm_gone = 1;
+        S.midi_vm      = 0;
+    }
+}
+
 /* ===================== Win32 DeviceIoControl bridge =====================
  * The user-mode renderer opens "\\.\VOPL3" and polls IOCTL_VOPL3_DRAIN to
  * pull queued (reg<<8)|data words out of the ring. */
-#define IOCTL_VOPL3_DRAIN       0x1000 /* out: array of DWORD OPL writes    */
-#define IOCTL_VOPL3_STAT        0x1001 /* out: [head,tail,lost,...]         */
-#define IOCTL_VOPL3_MIDI_DRAIN  0x1002 /* out: raw MPU-401 MIDI bytes        */
-#define IOCTL_VOPL3_MIDI_ENABLE 0x1003 /* start trapping 0x330/0x331 (once)  */
+#define IOCTL_VOPL3_DRAIN        0x1000 /* out: array of DWORD OPL writes    */
+#define IOCTL_VOPL3_STAT         0x1001 /* out: [head,tail,lost,...]         */
+#define IOCTL_VOPL3_MIDI_DRAIN   0x1002 /* out: raw MPU-401 MIDI bytes        */
+#define IOCTL_VOPL3_MIDI_ENABLE  0x1003 /* start trapping 0x330/0x331 (once)  */
+#define IOCTL_VOPL3_MIDI_VM_GONE 0x1004 /* out: 1 if MIDI VM terminated (1-shot) */
 
 DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params)
 {
@@ -561,6 +578,16 @@ DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params
         case DIOC_OPEN:              /* CreateFile("\\.\VOPL3") */
         case DIOC_CLOSEHANDLE:
             rc = 0;
+            break;
+
+        case IOCTL_VOPL3_MIDI_VM_GONE:  /* renderer: did the MIDI game's box close? */
+            if (params->cbOutBuffer >= 4) {
+                out[0] = S.midi_vm_gone;
+                S.midi_vm_gone = 0;                /* one-shot: clear on read */
+                if (params->lpcbBytesReturned)
+                    *(DWORD *)params->lpcbBytesReturned = 4;
+                rc = 0;
+            }
             break;
 
         case IOCTL_VOPL3_MIDI_ENABLE:   /* renderer: user chose FM+MIDI */
@@ -695,6 +722,13 @@ void __declspec(naked) VXD_control(void)
         jnz c6
             jmp Device_IO_Control_entry
         c6:
+        cmp eax, Destroy_VM
+        jnz c7
+            push ebx                      /* EBX = terminating VM handle */
+            call midi_vm_destroyed
+            clc
+            ret
+        c7:
         clc
         ret
     }
