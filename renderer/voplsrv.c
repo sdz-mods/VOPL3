@@ -45,10 +45,12 @@ static short     bufs[NBUF][FRAMES * 2];
 static DWORD     drainbuf[DRAINMAX];
 static long      gain256 = 512;    /* output gain, 256 = 1.0x; set from INI */
 
-static HMIDIOUT  hmidi;            /* MPU-401 MIDI output (0 if unavailable) */
+static HMIDIOUT  hmidi;            /* MPU-401 MIDI output, open only while used */
 static UINT      midi_dev = (UINT)MIDI_MAPPER;  /* device id; set from INI  */
 static int       midi_on;          /* user enabled FM+MIDI (registry Midi=1) */
+static DWORD     midi_last;        /* GetTickCount of last MIDI byte          */
 static BYTE      midibuf[MIDIMAX]; /* raw MIDI bytes drained from the VxD    */
+static int       realtime;         /* renderer currently at realtime priority */
 
 /* ---- FM volume boost ----
  * Nuked-OPL3 reproduces the OPL3's digital output level exactly, which
@@ -161,13 +163,61 @@ static void midi_feed(BYTE b)
     if (mhave >= mneed) { midi_short(run_status, mmsg[1], mneed == 2 ? mmsg[2] : 0); mhave = 0; }
 }
 
-static void drain_midi(void)
+/* Open the MIDI synth lazily (on the first byte since it went quiet), NOT at
+ * startup and NOT continuously. */
+#define MIDI_CLOSE_MS 5000         /* release the synth after this idle gap */
+
+static void midi_open(void)
+{
+    int wasrt = realtime;
+    if (wasrt) {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+        SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
+    }
+    if (midiOutOpen(&hmidi, midi_dev, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR)
+        hmidi = NULL;
+    if (wasrt) {
+        SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    }
+}
+
+/* Drain the VxD MIDI ring; open the synth on activity, release it after a
+ * quiet gap. Called every loop wake (whether or not the synth is open). */
+static void service_midi(void)
 {
     DWORD ret = 0, i;
-    if (!hmidi) return;
-    if (DeviceIoControl(hvxd, IOCTL_VOPL3_MIDI_DRAIN, NULL, 0,
-                        midibuf, sizeof(midibuf), &ret, NULL))
+    if (!midi_on) return;
+    if (!DeviceIoControl(hvxd, IOCTL_VOPL3_MIDI_DRAIN, NULL, 0,
+                         midibuf, sizeof(midibuf), &ret, NULL))
+        ret = 0;
+    if (ret) {
+        if (!hmidi) midi_open();
         for (i = 0; i < ret; i++) midi_feed(midibuf[i]);
+        midi_last = GetTickCount();
+    } else if (hmidi && (GetTickCount() - midi_last) > MIDI_CLOSE_MS) {
+        midiOutReset(hmidi);
+        midiOutClose(hmidi);
+        hmidi = NULL;
+    }
+}
+
+/* Realtime priority is held only while actually producing audio - FM playing
+ * OR MIDI flowing - so a CPU-bound DOS game can't starve either into
+ * choppiness; at the desktop (both idle) we drop to normal so a spin/deadlock
+ * can't wedge the machine. */
+static void go_realtime(void)
+{
+    SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    realtime = 1;
+}
+
+static void go_normal(void)
+{
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+    SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
+    realtime = 0;
 }
 
 /* ---- timestamped write scheduling ----
@@ -352,8 +402,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     WAVEFORMATEX wf;
     HANDLE       hev;
     int   i;
-    int   idle    = 0;                     /* skipping synthesis (chip silent) */
-    DWORD silence = 0;                     /* consecutive near-silent buffers  */
+    int   idle     = 0;                    /* skipping synthesis (chip silent) */
+    DWORD silence  = 0;                    /* consecutive near-silent buffers  */
 
     hvxd = CreateFile("\\\\.\\VOPL3", 0, 0, NULL, 0, FILE_FLAG_DELAYED_ERROR, NULL);
     if (hvxd == INVALID_HANDLE_VALUE) {
@@ -384,15 +434,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     OPL3_Reset(&chip, RATE);
 
     /* MPU-401 MIDI bridge - only if the user chose FM+MIDI at install. Tell
-     * the VxD to start trapping 0x330/0x331, then open MIDI out (non-fatal:
-     * if the open fails, FM still works and MIDI just isn't routed). In
-     * FM-only mode we never touch the MIDI ports or open a synth at all. */
+     * the VxD to start trapping 0x330/0x331. The MIDI synth itself is opened
+     * lazily (service_midi) only when a game actually sends MIDI, and released
+     * when it goes quiet - never held open at idle. In FM-only mode we never
+     * touch the MIDI ports or open a synth at all. */
     midi_on = midi_enabled();
     if (midi_on) {
         DWORD ret = 0;
         DeviceIoControl(hvxd, IOCTL_VOPL3_MIDI_ENABLE, NULL, 0, NULL, 0, &ret, NULL);
-        if (midiOutOpen(&hmidi, midi_dev, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR)
-            hmidi = NULL;
     }
 
     hev = CreateEvent(NULL, FALSE, FALSE, NULL);
@@ -425,14 +474,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
         waveOutWrite(hwo, &hdr[i], sizeof(WAVEHDR));
     }
 
-    /* Devices are open and buffers primed - now raise to realtime for the
-     * steady loop. A CPU-bound DOS game (e.g. DOOM) pins the CPU and would
-     * starve this renderer, making the OPL3 audio choppy; realtime lets us
-     * preempt the game the instant a buffer needs refilling. Safe here: the
-     * loop blocks on the waveOut event and runs only a few ms per 10 ms
-     * buffer, and there are no more blocking open calls past this point. */
-    SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    /* Realtime priority is managed DYNAMICALLY in the loop below (see
+     * go_realtime/go_normal): held while FM plays or MIDI flows, dropped to
+     * normal when both are idle. Realtime only matters to out-run a CPU-bound
+     * DOS game so audio doesn't stutter; at the Windows desktop there is
+     * nothing to out-run. */
 
     /* steady state: the event fires each time waveOut finishes a buffer; wake,
      * drain the newest register writes, regenerate every freed buffer and
@@ -454,8 +500,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
             }
         }
         /* MPU-401 MIDI: drain + send every wake (~10 ms) regardless of FM
-         * buffer state, so MIDI plays even while the OPL chip is idle. */
-        drain_midi();
+         * buffer state, so MIDI plays even while the OPL chip is idle. Opens
+         * the synth on demand and releases it after it goes quiet. */
+        service_midi();
         for (i = 0; i < NBUF; i++) {
             if (hdr[i].dwFlags & WHDR_DONE) {
                 DWORD n = drain_events();
@@ -481,6 +528,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
                 waveOutWrite(hwo, &hdr[i], sizeof(WAVEHDR));
             }
         }
+        /* set priority from the combined state: realtime while FM plays (chip
+         * not idle) OR MIDI is flowing (synth open); normal when both idle. */
+        if ((!idle || hmidi) && !realtime)   go_realtime();
+        else if (idle && !hmidi && realtime) go_normal();
     }
     /* not reached */
 }
