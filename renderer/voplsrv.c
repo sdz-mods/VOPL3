@@ -597,6 +597,20 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
          * buffer state, so MIDI plays even while the OPL chip is idle. Opens
          * the synth on demand and releases it after it goes quiet. */
         service_midi();
+        /* Drain the OPL ring on EVERY wake too - not only below, when a
+         * buffer has completed. Some sound drivers stall their buffer
+         * completions for long stretches (seen in the wild while a DOS box
+         * executes); if draining waited on them, the VxD ring would back up
+         * (tail frozen, writes lost) and idle-exit / the realtime raise
+         * would stall with it. Draining here keeps capture independent of
+         * the driver's pace - which is what this loop's timeout is for. */
+        {
+            DWORD nw = drain_events();
+            if (nw) {                          /* chip touched: (re)start */
+                idle    = 0;
+                silence = 0;
+            }
+        }
         for (i = 0; i < NBUF; i++) {
             if (hdr[i].dwFlags & WHDR_DONE) {
                 DWORD n = drain_events();

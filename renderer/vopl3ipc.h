@@ -24,8 +24,10 @@
  * print the bytes as a string ("A04" = Alpha 04; later "A05", "B01", "1.0").
  * The VxD mirrors the DWORD literal as VOPL3_VXD_REV in vopl3.c (its build
  * takes no extra includes); keep them in sync when bumping. */
-#define VOPL3_REV       "A04"
+#ifndef VOPL3_REV_DWORD         /* overridable (-d...) to tag TEST builds,  */
+#define VOPL3_REV       "A04"   /* e.g. "A4T2" - shows in the control panel */
 #define VOPL3_REV_DWORD ((DWORD)'A' | ((DWORD)'0' << 8) | ((DWORD)'4' << 16))
+#endif
 
 /* --- VxD ioctl the GUI reads directly (mirror of the VxD's private define) - */
 #ifndef IOCTL_VOPL3_STAT
