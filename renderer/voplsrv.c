@@ -22,9 +22,12 @@
 #include "vopl3ipc.h"      /* shared status/control contract with VOPLCFG.EXE */
 
 #define RATE      48000
+#ifndef FRAMES                 /* overridable (-dFRAMES=...) for buffering */
 #define FRAMES    480          /* per buffer: 10 ms                */
+#endif                         /* experiments on troublesome sound drivers */
+#ifndef NBUF
 #define NBUF      16           /* ~160 ms of buffering (rides out  */
-                               /* scheduling gaps while DOOM hogs  */
+#endif                         /* scheduling gaps while DOOM hogs  */
                                /* the CPU); music latency is fine  */
 #define DRAINMAX  8192         /* max writes drained per poll      */
 #define MIDIMAX   4096         /* max MIDI bytes drained per poll   */
