@@ -1,6 +1,6 @@
 # Building VOPL3
 
-The three components are built with **Open Watcom 2.0** on a Windows host, driven
+The four components are built with **Open Watcom 2.0** on a Windows host, driven
 by the PowerShell `build.ps1` scripts. The build is self-contained: no network
 access is needed and the only external dependency is the Open Watcom toolchain.
 
@@ -33,9 +33,10 @@ Test-Path tools\ow\binnt64\wcc386.exe    # -> True
 Run these from the repo root, in order:
 
 ```powershell
-.\vxd\build.ps1          # -> vxd\vopl3.vxd         (~5515 bytes)
-.\renderer\build.ps1     # -> renderer\voplsrv.exe  (~30720 bytes, Nuked OPL3)
-                         #    renderer\voplfast.exe (~47616 bytes, Nuked-OPL3-fast)
+.\vxd\build.ps1          # -> vxd\vopl3.vxd         (~6 KB)
+.\renderer\build.ps1     # -> renderer\voplsrv.exe  (~35 KB, Nuked OPL3)
+                         #    renderer\voplfast.exe (~52 KB, Nuked-OPL3-fast)
+.\gui\build.ps1          # -> gui\voplcfg.exe       (~35 KB, the control panel)
 .\installer\build.ps1    # -> installer\dist\       (the shippable package)
 ```
 
@@ -55,14 +56,20 @@ Run these from the repo root, in order:
   `WinMain`) so they run hidden with no console window. Both are compiled with
   full optimization (`-otexan -6r -fp6`); Watcom's default is *no* optimization,
   which makes the synthesis ~2.3x slower — enough to peg a P3-class CPU.
-- **`installer\build.ps1`** builds `SBPATCH.EXE` from `SBPATCH.C` and
-  `MIDILIST.EXE` from `tests/MIDILIST.C`, then assembles `installer/dist/` — the
-  VxD, both renderer builds, `SBPATCH.EXE`, `MIDILIST.EXE`, and the
-  CRLF-normalized `INSTALL/UNINSTALL` `.BAT` + `.REG` (incl. `MIDION.REG`) +
+- **`gui\build.ps1`** builds the control panel `voplcfg.exe` (GUI subsystem;
+  links `shell32` for the tray, `comctl32` for the trackbar, `winmm` for MIDI
+  device enumeration, and `advapi32`). It shares `renderer/vopl3ipc.h` — the
+  renderer status/control contract — and attaches the app icon
+  (`resource.rc` → `voplcfg.ico`) with `wrc` after linking.
+- **`installer\build.ps1`** builds `SBPATCH.EXE` and `VOPLSTOP.EXE` from their
+  `.C` sources and `MIDILIST.EXE` from `tests/MIDILIST.C`, then assembles
+  `installer/dist/` — the VxD, both renderer builds, `VOPLCFG.EXE`,
+  `SBPATCH.EXE`, `VOPLSTOP.EXE`, `MIDILIST.EXE`, and the CRLF-normalized
+  `INSTALL/UNINSTALL` `.BAT` + `.REG` (incl. `MIDION.REG`, `VOPLCFG.REG`) +
   `README.TXT` + `VOPL3.INI`. **`dist/` is the folder you copy to the Win98/ME
-  machine.** `INSTALL.BAT` asks which renderer build to install and whether to
-  enable MIDI (FM only vs FM + MIDI); the chosen renderer lands as
-  `C:\VOPL3\VOPLSRV.EXE`.
+  machine.** `INSTALL.BAT` asks which renderer build to install, whether the
+  control panel autostarts with Windows, and whether to enable MIDI (FM only
+  vs FM + MIDI); the chosen renderer lands as `C:\VOPL3\VOPLSRV.EXE`.
 
 Build outputs (`vxd/vopl3.vxd`, `renderer/voplsrv.exe`, `renderer/voplfast.exe`,
 `installer/dist/`) are not committed — the build is deterministic (apart from

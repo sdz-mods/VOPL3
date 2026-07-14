@@ -92,10 +92,11 @@ uses **Nuked-OPL3-fast** (a bit-exact fork) at roughly **half the CPU cost** —
 useful on machines with slower CPUs, where cycle-accurate synthesis is a real
 load. Whichever is chosen gets installed as `C:\VOPL3\VOPLSRV.EXE`.
 
-FM volume is adjustable in `C:\VOPL3\VOPL3.INI` (`volume=<percent>`, default
-**200**, max 400, applied at renderer start). 100 is the OPL3 chip's authentic
-digital level — which sounds quiet next to SBEMUL's digital SFX. The boost is
-applied after synthesis, so the emulator cores stay bit-exact.
+FM volume is adjustable from the **control panel** (applies live — see
+below) or in `C:\VOPL3\VOPL3.INI` (`volume=<percent>`, default **200**, max
+400). 100 is the OPL3 chip's authentic digital level — which sounds quiet next
+to SBEMUL's digital SFX. The boost is applied after synthesis, so the emulator
+cores stay bit-exact.
 
 ### 3. `SBPATCH.EXE` — the SBEMUL coexistence patch
 SBEMUL grabs 0x388 *only* to fake AdLib detection — it produces no FM sound —
@@ -124,7 +125,8 @@ choose **FM + MIDI** at install and VOPL3 takes over the MPU-401 too:
   S‑YXG50, …), a hardware wavetable, or an external module on a MIDI interface
   — instead of only the GS synth. (SBEMUL's kernel MIDI is hardwired to that
   one synth; this is the way around it.)
-- Pick the target in **Control Panel → Multimedia → MIDI**, or set it directly
+- Pick the target in the **VOPL3 control panel** (easiest — applies live, see
+  below), in **Control Panel → Multimedia → MIDI**, or set it directly
   in `C:\VOPL3\VOPL3.INI` `[midi] device=` (`65535` = MIDI Mapper, the default;
   or a device index). Run **`MIDILIST.EXE`** to list the devices and their
   indices.
@@ -132,6 +134,25 @@ choose **FM + MIDI** at install and VOPL3 takes over the MPU-401 too:
   0x330/0x331). Enablement is an install-time choice stored in the registry
   (`HKLM\Software\VOPL3\Midi`); in FM-only mode nothing MIDI-related is touched.
   Scope is **UART mode**; MPU-401 intelligent mode is not emulated.
+
+## Control panel (`VOPLCFG.EXE`)
+
+An optional Win32 **system-tray app** installed alongside the renderer:
+
+- **MIDI output device** and **FM volume**, applied **live** — Apply writes
+  `C:\VOPL3\VOPL3.INI` (so everything works identically with no GUI running)
+  and pokes the running renderer to re-read it; no reboot, no restart.
+- **Status at a glance**: renderer running/backend, FM playing/idle, dynamic
+  priority, MIDI bridge + synth state, and the driver/renderer revisions.
+- **Debug counters** (the same ones `VOPLSTAT.EXE` prints): OPL ring
+  head/tail/lost, trapped writes, MIDI bytes captured/lost — overruns are
+  flagged inline.
+
+It talks to the VxD read-only and to a small status block the renderer
+publishes, and degrades gracefully — with no driver it shows *not loaded*,
+with no renderer *not running*; settings still save. Minimize hides it to the
+tray; X exits. `INSTALL.BAT` asks whether it should start with Windows
+(minimized to the tray).
 
 ## What's used from other projects
 
@@ -165,10 +186,13 @@ their own licenses:
 ```
 vxd/         VOPL3.VXD — ring-0 port-trap driver (+ build.ps1, patches wlink output)
 renderer/    the user-mode renderer (hidden background app); built twice:
-             VOPLSRV.EXE (Nuked OPL3) and VOPLFAST.EXE (Nuked-OPL3-fast)
+             VOPLSRV.EXE (Nuked OPL3) and VOPLFAST.EXE (Nuked-OPL3-fast);
+             vopl3ipc.h is the status/control contract shared with the GUI
+gui/         VOPLCFG.EXE — the control panel / tray app (see above)
 installer/   INSTALL.BAT / UNINSTALL.BAT, SBPATCH.C (the SBEMUL patcher),
-             *.REG (incl. MIDION.REG for the FM+MIDI choice), README, and
-             build.ps1 that assembles the shippable dist/ package
+             VOPLSTOP.C (stops running VOPL3 programs on reinstall), *.REG
+             (incl. MIDION.REG for FM+MIDI, VOPLCFG.REG for GUI autostart),
+             README, and build.ps1 that assembles the shippable dist/ package
 nuked-opl3/  Nuked OPL3 (bundled, LGPL 2.1)
 nuked-opl3-fast/  Nuked-OPL3-fast, tgies' bit-exact ~2x-faster fork (LGPL 2.1)
 ref/         vmdisp9x fixlink + MIT license (the VxD glue headers vmm.h/io32.h/
@@ -180,15 +204,16 @@ BUILD.md     build prerequisites and step-by-step
 
 ## Build & install
 
-- **Build:** run the `build.ps1` in `vxd/`, `renderer/`, then `installer/`
-  (the last assembles `installer/dist/`, the files you copy to the target).
-  `vxd/build.ps1 -Serial` re-enables COM1 debug tracing (off by default).
+- **Build:** run the `build.ps1` in `vxd/`, `renderer/`, `gui/`, then
+  `installer/` (the last assembles `installer/dist/`, the files you copy to the
+  target). `vxd/build.ps1 -Serial` re-enables COM1 debug tracing (off by default).
   Prerequisites (Open Watcom 2.0) and step-by-step are in **[BUILD.md](BUILD.md)**.
 - **Install on the Win98/ME machine:** copy the `dist/` folder over and run
   `INSTALL.BAT` from a DOS box — it installs the VxD (boot-loaded), installs the
   renderer (autostarts hidden; you pick the Nuked or the CPU-friendly fast
-  build), lets you choose **FM only** or **FM + MIDI** (see **MIDI** above), and
-  patches `SBEMUL.SYS`. Reboot. In your DOS
+  build), installs the control panel (you choose whether it starts with
+  Windows), lets you choose **FM only** or **FM + MIDI** (see **MIDI** above),
+  and patches `SBEMUL.SYS`. Reboot. In your DOS
   game set **Music = AdLib/OPL3** and **Sound FX = Sound Blaster**. `UNINSTALL.BAT`
   restores the original SBEMUL and removes VOPL3.
 

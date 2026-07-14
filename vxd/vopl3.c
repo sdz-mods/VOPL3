@@ -569,6 +569,11 @@ void __stdcall midi_vm_destroyed(DWORD vm)
 #define IOCTL_VOPL3_MIDI_ENABLE  0x1003 /* start trapping 0x330/0x331 (once)  */
 #define IOCTL_VOPL3_MIDI_VM_GONE 0x1004 /* out: 1 if MIDI VM terminated (1-shot) */
 
+/* VxD revision reported by STAT out[9]: up to 4 ASCII chars, little-endian,
+ * printed as a string by readers. Keep in sync with vopl3ipc.h VOPL3_REV
+ * (kept literal here so the VxD's minimal build needs no extra include). */
+#define VOPL3_VXD_REV 0x00343041        /* "A04" */
+
 DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params)
 {
     DWORD *out = (DWORD *)params->lpOutBuffer;
@@ -656,6 +661,10 @@ DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params
                     out[7] = S.midi_lost;
                     out[8] = S.mpu_uart;           /* in UART mode? */
                     nout = 36;
+                }
+                if (params->cbOutBuffer >= 40) {   /* extended: VxD revision */
+                    out[9] = VOPL3_VXD_REV;        /* packed major<<16|minor<<8|patch */
+                    nout = 40;
                 }
                 if (params->lpcbBytesReturned)
                     *(DWORD *)params->lpcbBytesReturned = nout;

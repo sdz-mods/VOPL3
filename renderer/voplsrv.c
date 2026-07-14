@@ -19,6 +19,7 @@
 #include <windows.h>
 #include <mmsystem.h>
 #include "opl3.h"
+#include "vopl3ipc.h"      /* shared status/control contract with VOPLCFG.EXE */
 
 #define RATE      48000
 #define FRAMES    480          /* per buffer: 10 ms                */
@@ -45,13 +46,28 @@ static WAVEHDR   hdr[NBUF];
 static short     bufs[NBUF][FRAMES * 2];
 static DWORD     drainbuf[DRAINMAX];
 static long      gain256 = 512;    /* output gain, 256 = 1.0x; set from INI */
+static UINT      volume_pct = 200; /* FM volume percent; set from INI         */
 
 static HMIDIOUT  hmidi;            /* MPU-401 MIDI output, open only while used */
 static UINT      midi_dev = (UINT)MIDI_MAPPER;  /* device id; set from INI  */
 static int       midi_on;          /* user enabled FM+MIDI (registry Midi=1) */
 static DWORD     midi_last;        /* GetTickCount of last MIDI byte          */
+static DWORD     midi_total;       /* total MIDI bytes fed to the synth       */
 static BYTE      midibuf[MIDIMAX]; /* raw MIDI bytes drained from the VxD    */
 static int       realtime;         /* renderer currently at realtime priority */
+
+/* Published status block (shared memory) the GUI reads; NULL if it couldn't
+ * be created (the renderer runs fine either way). See status_publish(). */
+static VOPL3_STATUS *g_stat;
+static HANDLE        g_statmap;
+static UINT          g_msg_reload;  /* RegisterWindowMessage(VOPL3_MSG_RELOAD) */
+static UINT          g_msg_panic;   /* RegisterWindowMessage(VOPL3_MSG_PANIC)  */
+
+#ifdef VOPL3_FAST
+#define BACKEND_ID 1                /* built against nuked-opl3-fast */
+#else
+#define BACKEND_ID 0                /* built against nuked-opl3 (reference) */
+#endif
 
 /* ---- FM volume boost ----
  * Nuked-OPL3 reproduces the OPL3's digital output level exactly, which
@@ -80,6 +96,7 @@ static void load_settings(void)
     lstrcpy(ini + n, "VOPL3.INI");
     pct = GetPrivateProfileInt("renderer", "volume", 200, ini);
     if (pct > 400) pct = 400;
+    volume_pct = pct;
     gain256 = ((long)pct << 8) / 100;
 
     /* [midi] device: 0xFFFF (default) = MIDI Mapper (follows the user's
@@ -206,6 +223,7 @@ static void service_midi(void)
     if (ret) {
         if (!hmidi) midi_open();
         for (i = 0; i < ret; i++) midi_feed(midibuf[i]);
+        midi_total += ret;
         midi_last = GetTickCount();
         return;
     }
@@ -234,6 +252,40 @@ static void go_normal(void)
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
     SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
     realtime = 0;
+}
+
+/* ---- status block for the GUI ----
+ * Publish a small shared-memory snapshot the VOPLCFG control panel reads. This
+ * is best-effort: if the mapping can't be created the renderer runs exactly as
+ * before. The GUI treats a missing mapping (or a stale `tick`) as "renderer not
+ * running" and never depends on it. */
+static void status_init(void)
+{
+    g_statmap = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
+                                  0, sizeof(VOPL3_STATUS), VOPL3_STATUS_NAME);
+    if (!g_statmap) return;
+    g_stat = (VOPL3_STATUS *)MapViewOfFile(g_statmap, FILE_MAP_WRITE, 0, 0,
+                                           sizeof(VOPL3_STATUS));
+    if (!g_stat) return;
+    ZeroMemory(g_stat, sizeof(*g_stat));
+    g_stat->magic   = VOPL3_STATUS_MAGIC;
+    g_stat->ver     = VOPL3_STATUS_VER;
+    g_stat->rev     = VOPL3_REV_DWORD;
+    g_stat->backend = BACKEND_ID;
+}
+
+static void status_publish(int active)
+{
+    if (!g_stat) return;
+    g_stat->midi_on    = midi_on;
+    g_stat->synth_open = hmidi ? 1 : 0;
+    g_stat->midi_dev   = midi_dev;
+    g_stat->realtime   = realtime;
+    g_stat->active     = active;
+    g_stat->volume     = volume_pct;
+    g_stat->midi_bytes = midi_total;
+    g_stat->frames++;
+    g_stat->tick       = GetTickCount();
 }
 
 /* ---- timestamped write scheduling ----
@@ -386,11 +438,28 @@ static void audio_stop(void)
         CloseHandle(hvxd);
         hvxd = NULL;
     }
+    if (g_stat)   { UnmapViewOfFile(g_stat); g_stat = NULL; }
+    if (g_statmap){ CloseHandle(g_statmap);  g_statmap = NULL; }
     timeEndPeriod(1);
 }
 
 static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+    /* Live control from the VOPLCFG GUI (registered messages, so compared as
+     * variables, not switch cases). */
+    if (g_msg_reload && msg == g_msg_reload) {
+        UINT olddev = midi_dev;
+        load_settings();                 /* re-read VOPL3.INI: volume + device */
+        /* Volume applies instantly (gain256 is read live per buffer). If the
+         * MIDI device changed while the synth is open, release it so the next
+         * MIDI byte reopens on the newly chosen device - no restart needed. */
+        if (hmidi && midi_dev != olddev) midi_close();
+        return 0;
+    }
+    if (g_msg_panic && msg == g_msg_panic) {
+        if (hmidi) midiOutReset(hmidi);  /* all notes off; keep the synth open */
+        return 0;
+    }
     switch (msg) {
     case WM_QUERYENDSESSION:
         return TRUE;                       /* no objection to shutdown */
@@ -440,6 +509,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
                  CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
                  NULL, NULL, hInst, NULL);
 
+    /* Registered messages the VOPLCFG GUI POSTs to apply INI changes live and
+     * to send an all-notes-off. Same name resolves to the same value in both. */
+    g_msg_reload = RegisterWindowMessage(VOPL3_MSG_RELOAD);
+    g_msg_panic  = RegisterWindowMessage(VOPL3_MSG_PANIC);
+
     /* Win9x's default scheduler tick is ~55 ms, so a polling loop that falls
      * back to Sleep() starves the audio buffers in bursts even when the CPU is
      * idle. Ask for 1 ms timer granularity and, below, drive the refill loop
@@ -447,6 +521,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     timeBeginPeriod(1);
 
     load_settings();
+    status_init();
     OPL3_Reset(&chip, RATE);
 
     /* MPU-401 MIDI bridge - only if the user chose FM+MIDI at install. Tell
@@ -552,6 +627,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
         { int busy = !idle || (GetTickCount() - midi_last) < MIDI_RT_MS;
           if (busy && !realtime)      go_realtime();
           else if (!busy && realtime) go_normal(); }
+        status_publish(!idle);
     }
     /* not reached */
 }

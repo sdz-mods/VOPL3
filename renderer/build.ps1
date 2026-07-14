@@ -25,7 +25,7 @@ try {
     $exe = Get-Item voplsrv.exe
     "built voplsrv.exe : $($exe.Length) bytes (Nuked OPL3)"
 
-    & wcl386.exe -q -bt=nt -l=nt_win @opt -I"$root\nuked-opl3-fast" '-fe=voplfast.exe' voplsrv.c "$root\nuked-opl3-fast\opl3.c" winmm.lib advapi32.lib
+    & wcl386.exe -q -bt=nt -l=nt_win @opt -dVOPL3_FAST -I"$root\nuked-opl3-fast" '-fe=voplfast.exe' voplsrv.c "$root\nuked-opl3-fast\opl3.c" winmm.lib advapi32.lib
     if ($LASTEXITCODE -ne 0) { throw "wcl386 (fast backend) failed ($LASTEXITCODE)" }
     $exe = Get-Item voplfast.exe
     "built voplfast.exe : $($exe.Length) bytes (Nuked-OPL3-fast)"

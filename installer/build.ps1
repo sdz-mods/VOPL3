@@ -24,12 +24,13 @@ try {
     Move-Item VOPLSTOP.EXE (Join-Path $dist 'VOPLSTOP.EXE') -Force
     Remove-Item VOPLSTOP.OBJ -ErrorAction SilentlyContinue
 
-    # 2. stage the driver + both renderer builds + licenses under their
-    #    install names (INSTALL.BAT lets the user pick a renderer; the chosen
-    #    one is installed as C:\VOPL3\VOPLSRV.EXE)
+    # 2. stage the driver + both renderer builds + the control panel + licenses
+    #    under their install names (INSTALL.BAT lets the user pick a renderer;
+    #    the chosen one is installed as C:\VOPL3\VOPLSRV.EXE)
     Copy-Item (Join-Path $root 'vxd\vopl3.vxd')         (Join-Path $dist 'VOPL3.VXD')    -Force
     Copy-Item (Join-Path $root 'renderer\voplsrv.exe')  (Join-Path $dist 'VOPLSRV.EXE')  -Force
     Copy-Item (Join-Path $root 'renderer\voplfast.exe') (Join-Path $dist 'VOPLFAST.EXE') -Force
+    Copy-Item (Join-Path $root 'gui\voplcfg.exe')       (Join-Path $dist 'VOPLCFG.EXE')  -Force
     Copy-Item (Join-Path $root 'nuked-opl3\LICENSE')    (Join-Path $dist 'NUKED-OPL3-LICENSE.txt') -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $root 'nuked-opl3-fast\LICENSE') (Join-Path $dist 'NUKED-OPL3-FAST-LICENSE.txt') -Force -ErrorAction SilentlyContinue
 
@@ -40,7 +41,7 @@ try {
     Remove-Item MIDILIST.OBJ -ErrorAction SilentlyContinue
 
     # 3. copy the runtime text files, normalised to CRLF for DOS
-    foreach ($t in 'INSTALL.BAT','UNINSTALL.BAT','INSTALL.REG','UNINSTALL.REG','MIDION.REG','README.TXT','VOPL3.INI') {
+    foreach ($t in 'INSTALL.BAT','UNINSTALL.BAT','INSTALL.REG','UNINSTALL.REG','MIDION.REG','VOPLCFG.REG','README.TXT','VOPL3.INI') {
         $src = Join-Path $PSScriptRoot $t
         $dst = Join-Path $dist $t
         $c = ([IO.File]::ReadAllText($src) -replace "`r`n","`n") -replace "`n","`r`n"

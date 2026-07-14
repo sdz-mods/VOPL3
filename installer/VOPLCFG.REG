@@ -1,0 +1,4 @@
+REGEDIT4
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Run]
+"VOPL3 Control Panel"="C:\\VOPL3\\VOPLCFG.EXE /tray"

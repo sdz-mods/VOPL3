@@ -19,3 +19,4 @@ installer/dist/
 Thumbs.db
 Desktop.ini
 *~
+*.res

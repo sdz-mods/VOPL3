@@ -20,6 +20,8 @@ INSTALL
       You choose between two builds with identical sound output:
         1 = Nuked OPL3 (reference), 2 = Nuked OPL3 fast (about half the
         CPU use - recommended, especially on slower machines),
+    - installs the control panel (C:\VOPL3\VOPLCFG.EXE; you choose whether
+      it starts with Windows, minimized to the system tray),
     - asks FM only vs FM + MIDI (see MIDI below; default FM only),
     - patches SBEMUL.SYS so it stops claiming FM port 388 (keeps digital+MIDI).
   Then REBOOT.
@@ -33,11 +35,22 @@ USE
   Music = AdLib (or OPL3) and Sound FX = Sound Blaster. You then get OPL3
   music (via VOPL3) AND digital sound effects (via SBEMUL) at the same time.
 
+CONTROL PANEL (VOPLCFG.EXE)
+  A small tray app for configuring and watching VOPL3 - no reboot needed:
+    - pick the MIDI output device and set the FM volume; Apply saves them to
+      VOPL3.INI and the running renderer picks them up immediately,
+    - shows engine status (renderer/backend, FM playing/idle, priority,
+      MIDI bridge + synth state), driver + renderer revisions, and the same
+      debug counters VOPLSTAT prints.
+  Minimize hides it to the system tray; the X button exits it. Everything
+  works exactly the same with the control panel not running - it is a
+  convenience, not a required part.
+
 FM VOLUME
-  The FM music volume can be adjusted in C:\VOPL3\VOPL3.INI (volume=<percent>,
-  default 200, max 400; takes effect at next start/reboot). 100 is the OPL3
-  chip's authentic digital level, which sounds quiet next to SBEMUL's digital
-  sound.
+  The FM music volume is easiest to change in the control panel (applies
+  live). It is stored in C:\VOPL3\VOPL3.INI (volume=<percent>, default 200,
+  max 400). 100 is the OPL3 chip's authentic digital level, which sounds
+  quiet next to SBEMUL's digital sound.
 
 MIDI (optional - only if you chose FM + MIDI at install)
   Normally DOS-game MIDI plays through SBEMUL's fixed synth (Microsoft GS
@@ -45,7 +58,8 @@ MIDI (optional - only if you chose FM + MIDI at install)
   it through the Windows MIDI Mapper, so it can play on ANY installed synth or
   device - a software synth (Roland VSC, Yamaha S-YXG50, ...), a hardware
   wavetable, or an external module on a MIDI interface.
-    - Pick the target in Control Panel > Multimedia > MIDI, or set it in
+    - Pick the target in the VOPL3 control panel (VOPLCFG.EXE - easiest,
+      applies live), in Control Panel > Multimedia > MIDI, or in
       C:\VOPL3\VOPL3.INI  [midi] device=  (65535 = MIDI Mapper (default), or a
       device index). Run MIDILIST.EXE to list devices and their indices.
     - FM + MIDI replaces SBEMUL's MIDI. FM only leaves it untouched.
@@ -69,10 +83,14 @@ FILES
   INSTALL.BAT / UNINSTALL.BAT   installer / uninstaller
   INSTALL.REG / UNINSTALL.REG   registry entries
   MIDION.REG                    enables MIDI (applied if you choose FM + MIDI)
+  VOPLCFG.REG                   control-panel autostart (applied if chosen)
   SBPATCH.EXE                   the SBEMUL.SYS patcher
   MIDILIST.EXE                  lists MIDI output devices (for FM + MIDI)
   VOPL3.VXD                     OPL3 (+ optional MPU-401 MIDI) port-trap VxD
   VOPLSRV.EXE                   renderer, Nuked OPL3 backend (LGPL 2.1)
   VOPLFAST.EXE                  renderer, Nuked-OPL3-fast backend (LGPL 2.1)
                                 (the one you pick is installed as VOPLSRV.EXE)
+  VOPLCFG.EXE                   control panel / tray app (see above)
+  VOPLSTOP.EXE                  stops the running renderer/control panel
+                                (used by INSTALL.BAT on reinstall)
   VOPL3.INI                     renderer settings (FM volume, MIDI device)
