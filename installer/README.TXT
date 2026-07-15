@@ -52,6 +52,15 @@ FM VOLUME
   max 400). 100 is the OPL3 chip's authentic digital level, which sounds
   quiet next to SBEMUL's digital sound.
 
+TUNING (advanced - C:\VOPL3\VOPL3.INI, see the comments in the file)
+  buffer=<ms>     audio buffering depth, default 160 (range 40-960). Raise
+                  it (e.g. 480) if FM audio stutters in a regular pattern on
+                  your sound driver; costs some FM latency. Applied at
+                  renderer start.
+  priority=...    auto (default) = realtime only while producing audio;
+                  realtime = hold realtime always (pre-A04 behaviour);
+                  normal = never raise (diagnostic).
+
 MIDI (optional - only if you chose FM + MIDI at install)
   Normally DOS-game MIDI plays through SBEMUL's fixed synth (Microsoft GS
   Wavetable). Choosing FM + MIDI makes VOPL3 take over MPU-401 MIDI and send

@@ -26,9 +26,11 @@
 #define FRAMES    480          /* per buffer: 10 ms                */
 #endif                         /* experiments on troublesome sound drivers */
 #ifndef NBUF
-#define NBUF      16           /* ~160 ms of buffering (rides out  */
-#endif                         /* scheduling gaps while DOOM hogs  */
-                               /* the CPU); music latency is fine  */
+#define NBUF      16           /* default buffer count: ~160 ms (rides out */
+#endif                         /* scheduling gaps while DOOM hogs the CPU; */
+                               /* music latency is fine)                   */
+#define NBUF_MAX  96           /* [renderer] buffer= upper bound (~960 ms) */
+#define BUFMS     (FRAMES / (RATE / 1000))   /* ms per buffer              */
 #define DRAINMAX  8192         /* max writes drained per poll      */
 #define MIDIMAX   4096         /* max MIDI bytes drained per poll   */
 
@@ -45,11 +47,13 @@
 static opl3_chip chip;
 static HANDLE    hvxd;
 static HWAVEOUT  hwo;
-static WAVEHDR   hdr[NBUF];
-static short     bufs[NBUF][FRAMES * 2];
+static WAVEHDR   hdr[NBUF_MAX];
+static short     bufs[NBUF_MAX][FRAMES * 2];
 static DWORD     drainbuf[DRAINMAX];
 static long      gain256 = 512;    /* output gain, 256 = 1.0x; set from INI */
 static UINT      volume_pct = 200; /* FM volume percent; set from INI         */
+static int       nbuf = NBUF;      /* buffers in flight; [renderer] buffer=  */
+static int       prio_mode;        /* 0=auto 1=realtime 2=normal; priority=  */
 
 static HMIDIOUT  hmidi;            /* MPU-401 MIDI output, open only while used */
 static UINT      midi_dev = (UINT)MIDI_MAPPER;  /* device id; set from INI  */
@@ -106,6 +110,30 @@ static void load_settings(void)
      * control-panel choice); 0,1,2,... = a specific midiOut device index. */
     { UINT d = GetPrivateProfileInt("midi", "device", 0xFFFF, ini);
       midi_dev = (d == 0xFFFF) ? (UINT)MIDI_MAPPER : d; }
+
+    /* [renderer] buffer=<total ms> (default 160, clamped 40-960): deeper
+     * buffering rides out sound drivers that deliver buffer completions
+     * late or in bursts (audible as a snippet repeating ~every half second)
+     * at the cost of FM latency. Buffer SIZE stays 10 ms - only the count
+     * changes - so the wake cadence is unaffected. Applied at start only:
+     * the buffers are already queued with the device on a live reload. */
+    { UINT ms = GetPrivateProfileInt("renderer", "buffer", NBUF * BUFMS, ini);
+      if (ms < 4 * BUFMS)        ms = 4 * BUFMS;
+      if (ms > NBUF_MAX * BUFMS) ms = NBUF_MAX * BUFMS;
+      if (!hwo) nbuf = ms / BUFMS; }
+
+    /* [renderer] priority=auto|realtime|normal (default auto):
+     *   auto     = realtime only while producing audio (FM playing or MIDI
+     *              flowing), normal at idle;
+     *   realtime = hold realtime the whole time (the pre-A04 behaviour -
+     *              escape hatch for systems that regressed on auto);
+     *   normal   = never raise (diagnostic).
+     * Applies live on a control-panel reload. */
+    { char ps[16];
+      GetPrivateProfileString("renderer", "priority", "auto", ps, sizeof(ps), ini);
+      if      (!lstrcmpi(ps, "realtime")) prio_mode = 1;
+      else if (!lstrcmpi(ps, "normal"))   prio_mode = 2;
+      else                                prio_mode = 0; }
 }
 
 /* MIDI on/off is an install-time choice stored in the registry (set by the
@@ -309,7 +337,7 @@ static void status_publish(int active)
  * stays bounded. */
 #define PQMAX    8192              /* power of two */
 #define SPMS     (RATE / 1000)     /* samples per ms */
-#define MAXAHEAD (FRAMES * NBUF * 2)
+#define MAXAHEAD (FRAMES * nbuf * 2)
 
 static DWORD pq_time[PQMAX];       /* absolute target sample */
 static WORD  pq_reg[PQMAX];
@@ -427,7 +455,7 @@ static void audio_stop(void)
     int i;
     if (hwo) {
         waveOutReset(hwo);                 /* returns all queued buffers */
-        for (i = 0; i < NBUF; i++)
+        for (i = 0; i < nbuf; i++)
             waveOutUnprepareHeader(hwo, &hdr[i], sizeof(WAVEHDR));
         waveOutClose(hwo);
         hwo = NULL;
@@ -556,7 +584,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     }
 
     /* prime all buffers */
-    for (i = 0; i < NBUF; i++) {
+    for (i = 0; i < nbuf; i++) {
         hdr[i].lpData         = (char *)bufs[i];
         hdr[i].dwBufferLength = FRAMES * 4;
         hdr[i].dwFlags        = 0;
@@ -572,16 +600,21 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
      * go_realtime/go_normal): held while FM plays or MIDI flows, dropped to
      * normal when both are idle. Realtime only matters to out-run a CPU-bound
      * DOS game so audio doesn't stutter; at the Windows desktop there is
-     * nothing to out-run. */
+     * nothing to out-run. [renderer] priority= overrides this (see
+     * load_settings). */
 
     /* steady state: the event fires each time waveOut finishes a buffer; wake,
      * drain the newest register writes, regenerate every freed buffer and
-     * requeue it. The timeout is only a safety net so we still drain the ring
-     * if playback ever stalls. MsgWaitForMultipleObjects (QS_ALLINPUT covers
-     * sent messages too) also wakes for window messages, so the hidden window
-     * receives WM_ENDSESSION/WM_CLOSE without a second thread. */
+     * requeue it. The timeout backstops a stalled/bursty sound driver: 100 ms
+     * normally, but 10 ms while the MIDI synth is open - MIDI forwarding is
+     * paced by these wakes, and on drivers whose buffer completions arrive in
+     * bursts a 100 ms cadence audibly clumps the MIDI stream.
+     * MsgWaitForMultipleObjects (QS_ALLINPUT covers sent messages too) also
+     * wakes for window messages, so the hidden window receives
+     * WM_ENDSESSION/WM_CLOSE without a second thread. */
     for (;;) {
-        DWORD wr = MsgWaitForMultipleObjects(1, &hev, FALSE, 100, QS_ALLINPUT);
+        DWORD wr = MsgWaitForMultipleObjects(1, &hev, FALSE,
+                                             hmidi ? 10 : 100, QS_ALLINPUT);
         if (wr == WAIT_OBJECT_0 + 1) {
             MSG m;
             while (PeekMessage(&m, NULL, 0, 0, PM_REMOVE)) {
@@ -611,7 +644,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
                 silence = 0;
             }
         }
-        for (i = 0; i < NBUF; i++) {
+        for (i = 0; i < nbuf; i++) {
             if (hdr[i].dwFlags & WHDR_DONE) {
                 DWORD n = drain_events();
                 if (n) {                       /* chip touched: (re)start */
@@ -636,14 +669,18 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
                 waveOutWrite(hwo, &hdr[i], sizeof(WAVEHDR));
             }
         }
-        /* Priority from the combined state: realtime while FM plays (chip not
-         * idle) OR MIDI is actively flowing (a byte within MIDI_RT_MS); normal
-         * otherwise. Note this tracks MIDI ACTIVITY, not whether the synth is
-         * open - during an in-game gap the synth stays open but there is
-         * nothing to keep up with, so we drop to normal. */
-        { int busy = !idle || (GetTickCount() - midi_last) < MIDI_RT_MS;
-          if (busy && !realtime)      go_realtime();
-          else if (!busy && realtime) go_normal(); }
+        /* Priority per [renderer] priority= mode. auto: realtime while FM
+         * plays (chip not idle) OR MIDI is actively flowing (a byte within
+         * MIDI_RT_MS); normal otherwise. Note auto tracks MIDI ACTIVITY, not
+         * whether the synth is open - during an in-game gap the synth stays
+         * open but there is nothing to keep up with, so we drop to normal. */
+        if (prio_mode == 1)      { if (!realtime) go_realtime(); }
+        else if (prio_mode == 2) { if (realtime)  go_normal();   }
+        else {
+            int busy = !idle || (GetTickCount() - midi_last) < MIDI_RT_MS;
+            if (busy && !realtime)      go_realtime();
+            else if (!busy && realtime) go_normal();
+        }
         status_publish(!idle);
     }
     /* not reached */
