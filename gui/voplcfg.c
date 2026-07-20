@@ -47,6 +47,9 @@ static HWND   g_opl_l1, g_opl_l2, g_opl_s1, g_opl_s2;   /* OPL3 status/stats */
 static HWND   g_mid_l1, g_mid_s1;                       /* MIDI status/stats */
 static HWND   g_rev;                                    /* bottom revisions  */
 static HICON  g_icon, g_icon_sm;    /* 32x32 (window/Alt-Tab) + 16x16 (tray) */
+static HFONT  g_uifont;             /* DEFAULT_GUI_FONT - the standard dialog
+                                     * font; without WM_SETFONT, controls get
+                                     * the bold Win3.1-era System font */
 static int    g_tray_visible;
 static char   g_tip[128] = "VOPL3";
 static char   g_ini[MAX_PATH];
@@ -293,8 +296,10 @@ static void refresh(void)
 static HWND mk(HWND p, const char *cls, const char *txt, DWORD st,
                int x, int y, int w, int h, int id)
 {
-    return CreateWindow(cls, txt, WS_CHILD | WS_VISIBLE | st, x, y, w, h,
-                        p, (HMENU)(INT_PTR)id, GetModuleHandle(NULL), NULL);
+    HWND c = CreateWindow(cls, txt, WS_CHILD | WS_VISIBLE | st, x, y, w, h,
+                          p, (HMENU)(INT_PTR)id, GetModuleHandle(NULL), NULL);
+    if (c && g_uifont) SendMessage(c, WM_SETFONT, (WPARAM)g_uifont, TRUE);
+    return c;
 }
 
 /* One STATIC per text line, 18px tall - Win98's System font clips anything
@@ -438,6 +443,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 
     ini_path();
+    g_uifont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);  /* before CreateWindow:
+                                                          * build_ui runs in
+                                                          * WM_CREATE */
     g_msg_reload = RegisterWindowMessage(VOPL3_MSG_RELOAD);
 
     /* app icon from resources: 32x32 for the window class / Alt-Tab, and the
