@@ -572,7 +572,7 @@ void __stdcall midi_vm_destroyed(DWORD vm)
 /* VxD revision reported by STAT out[9]: up to 4 ASCII chars, little-endian,
  * printed as a string by readers. Keep in sync with vopl3ipc.h VOPL3_REV
  * (kept literal here so the VxD's minimal build needs no extra include). */
-#define VOPL3_VXD_REV 0x00343041        /* "A04" */
+#define VOPL3_VXD_REV 0x00353041        /* "A05" */
 
 DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params)
 {

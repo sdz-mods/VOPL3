@@ -48,7 +48,18 @@ GOTO srvdone
 COPY VOPLFAST.EXE C:\VOPL3\VOPLSRV.EXE
 :srvdone
 IF NOT EXIST C:\VOPL3\VOPLSRV.EXE GOTO copyerr
-IF NOT EXIST C:\VOPL3\VOPL3.INI COPY VOPL3.INI C:\VOPL3\VOPL3.INI >NUL
+IF EXIST C:\VOPL3\VOPL3.INI GOTO inikeep
+COPY VOPL3.INI C:\VOPL3\VOPL3.INI >NUL
+GOTO inidone
+:inikeep
+REM upgrade: keep the user's settings, but deliver the new template (with
+REM the latest settings documented) next to it for reference/merging
+COPY VOPL3.INI C:\VOPL3\VOPL3NEW.INI >NUL
+ECHO.
+ECHO   Kept your existing C:\VOPL3\VOPL3.INI (your settings). The new
+ECHO   version, with the latest settings documented, was saved as
+ECHO   C:\VOPL3\VOPL3NEW.INI - copy new entries over if you want them.
+:inidone
 
 ECHO [3/5] Installing the VOPL3 control panel ...
 IF EXIST C:\VOPL3\VOPLCFG.EXE ATTRIB -R C:\VOPL3\VOPLCFG.EXE >NUL
