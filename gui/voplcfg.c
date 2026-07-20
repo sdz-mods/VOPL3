@@ -302,16 +302,33 @@ static HWND mk(HWND p, const char *cls, const char *txt, DWORD st,
     return c;
 }
 
+/* pixel width of a string in the UI font, for aligning continuation lines */
+static int textw(const char *s)
+{
+    HDC   dc  = GetDC(NULL);
+    HFONT old = (HFONT)SelectObject(dc, g_uifont);
+    SIZE  sz;
+    GetTextExtentPoint32(dc, s, lstrlen(s), &sz);
+    SelectObject(dc, old);
+    ReleaseDC(NULL, dc);
+    return sz.cx;
+}
+
 /* One STATIC per text line, 18px tall - Win98's System font clips anything
  * multiline in a short control, so no control here ever holds two lines. */
 static void build_ui(HWND w)
 {
+    /* the diagrams' second lines start at their first line's first "->",
+     * measured in the real font so the arrows line up exactly */
+    int ax_opl  = 20 + textw("ports 388-38B ");
+    int ax_midi = 20 + textw("ports 330-331 ");
+
     /* ============ Virtual OPL3 ============ */
     mk(w, "BUTTON", "Virtual OPL3", BS_GROUPBOX, 8, 6, 388, 226, 0);
     mk(w, "STATIC", "ports 388-38B -> VXD trap -> VOPLSRV (Nuked OPL3)",
        0, 20, 26, 368, 18, 0);
     mk(w, "STATIC", "-> waveOut -> KMIXER -> sound card",
-       0, 76, 44, 312, 18, 0);
+       0, ax_opl, 44, 312, 18, 0);
     mk(w, "STATIC", "Emulates the AdLib/OPL3 FM chip in software;",
        0, 20, 68, 368, 18, 0);
     mk(w, "STATIC", "works for both DOS and Windows programs.",
@@ -334,7 +351,7 @@ static void build_ui(HWND w)
     mk(w, "STATIC", "ports 330-331 -> VXD trap -> VOPLSRV MIDI parser",
        0, 20, 260, 368, 18, 0);
     mk(w, "STATIC", "-> midiOut -> any installed MIDI device",
-       0, 76, 278, 312, 18, 0);
+       0, ax_midi, 278, 312, 18, 0);
     mk(w, "STATIC", "Bridges MIDI from DOS programs only;",
        0, 20, 302, 368, 18, 0);
     mk(w, "STATIC", "Windows MIDI applications are unaffected.",
