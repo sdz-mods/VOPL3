@@ -1,12 +1,16 @@
 /* SBPATCH.EXE - patch Microsoft's SBEMUL.SYS so it stops claiming the AdLib FM
  * ports 388-38B (VOPL3 needs them), while keeping digital + MIDI.
  *
- *   1. verifies it's a PE file and its PE checksum is VALID (integrity),
+ *   1. verifies it's a PE file; a stale PE checksum only WARNS (third-party
+ *      patches - e.g. the SB16-enable patch - skip the fixup, and Win9x
+ *      loads such files anyway; the pattern match below is the hard gate),
  *   2. finds the FM port table by PATTERN (388,389,38A,38B as consecutive
- *      DWORDs) so it works regardless of the exact Win98 build,
+ *      DWORDs, required exactly once) so it works regardless of the exact
+ *      Win98 build and refuses anything unrecognisable,
  *   3. backs up the original (SBEMUL.SYS.orig),
  *   4. changes those four ports to unused 2A0-2A3,
- *   5. recomputes the PE checksum and writes it back.
+ *   5. recomputes the PE checksum and writes it back (also repairing a
+ *      previously stale one).
  *
  * Build (Open Watcom, Win32 console - runs on Win98): see build.ps1
  * Usage: SBPATCH.EXE [path-to-SBEMUL.SYS]
@@ -121,15 +125,17 @@ int main(int argc, char **argv)
         free(d); return 0;
     }
 
-    /* A validly-patched-by-us file has a valid checksum, as does a pristine
-     * one; only refuse if the checksum is genuinely broken (corrupt, or
-     * modified by something else that didn't fix it). */
-    if (stored != calc) {
-        printf("ERROR: PE checksum is not valid - file is corrupt or was modified\n"
-               "       by something else. Refusing to patch. Restore a clean\n"
-               "       SBEMUL.SYS and try again.\n");
-        free(d); return 3;
-    }
+    /* A pristine or patched-by-us file has a valid checksum. A mismatch
+     * usually means a THIRD-PARTY patch that skipped the checksum fixup
+     * (seen in the wild: the SB16-enable patch) - Win9x loads such files
+     * fine, so warn and continue. The exactly-once port-table pattern
+     * matches below are the real safety gate, and our rewrite installs a
+     * correct checksum either way. */
+    if (stored != calc)
+        printf("WARNING: PE checksum is stale - the file was already modified by\n"
+               "         another patch (e.g. SB16 enable), or is damaged. Continuing;\n"
+               "         the port tables must still match exactly, and the patched\n"
+               "         file gets a correct checksum.\n");
 
     /* back up the original before the FIRST modification */
     if (need_fm || (need_midi && !fm_moved)) {

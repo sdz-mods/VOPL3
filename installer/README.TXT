@@ -83,8 +83,11 @@ ABOUT THE SBEMUL PATCH
   takes 388. SBPATCH.EXE changes the four FM port entries inside your own
   SBEMUL.SYS to (hopefully) unused ports and fixes the PE checksum, so SBEMUL
   keeps its digital + MIDI and leaves 388 to VOPL3. It:
-    - validates the PE checksum before touching anything,
-    - locates the FM port table by byte pattern (works across W98 builds),
+    - locates the FM port table by byte pattern, required to match exactly
+      once (works across W98 builds, refuses unrecognised files),
+    - tolerates files modified by other patches (e.g. the SB16-enable
+      patch): a stale PE checksum only warns, and the patched file gets a
+      correct checksum written back,
     - backs up the original as SBEMUL.SYS.orig,
   No Microsoft binary is redistributed - your own file is patched in place.
 

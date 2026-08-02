@@ -107,9 +107,12 @@ to (hopefully) unused ports, so SBEMUL keeps its digital audio + MIDI and simply
 stops touching 0x388, leaving it for VOPL3. The result: **OPL3 music (VOPL3) and
 digital SFX/MIDI (SBEMUL) at the same time.**
 
-The patcher is deliberately careful: it validates the PE checksum before touching
-anything, finds the FM-port table by byte pattern (so it works across Win98
-builds rather than a hardcoded offset), backs up the original as `SBEMUL.SYS.orig`.
+The patcher is deliberately careful: it finds the FM-port table by byte pattern,
+required to match exactly once (so it works across Win98 builds rather than a
+hardcoded offset, and refuses anything unrecognisable), backs up the original as
+`SBEMUL.SYS.orig`, and writes back a correct PE checksum. A stale checksum on the
+input only warns — third-party SBEMUL patches (e.g. the SB16-enable patch) skip
+the checksum fixup, and coexisting with them is supported.
 
 ## MIDI (optional): routable DOS-game General MIDI
 
