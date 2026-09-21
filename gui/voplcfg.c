@@ -235,7 +235,10 @@ static void refresh(void)
         strcpy(line, "Renderer: not running");
     upd(g_opl_l1, g_p_opl_l1, sizeof(g_p_opl_l1), line);
 
-    if (live)
+    if (live && s->ver >= 3 && !s->fm_on)
+        sprintf(line, "FM: off (MIDI-only install)      Priority: %s",
+                s->realtime ? "realtime" : "normal");
+    else if (live)
         sprintf(line, "FM: %s      Priority: %s",
                 s->active               ? "playing" :
                 (s->ver < 2 || s->out_open) ? "idle"
@@ -286,6 +289,7 @@ static void refresh(void)
      * at realtime; a deferred update goes out on a later tick. */
     if (n == 0) strcpy(g_tip, "VOPL3: driver not loaded");
     else if (!live) strcpy(g_tip, "VOPL3: renderer stopped");
+    else if (s->ver >= 3 && !s->fm_on) strcpy(g_tip, "VOPL3: MIDI only");
     else sprintf(g_tip, "VOPL3: %s, FM %s", s->midi_on ? "FM+MIDI" : "FM",
                  s->active ? "playing" : "idle");
     if (g_tray_visible && strcmp(g_tip, g_p_tip) && !(live && s->realtime)) {

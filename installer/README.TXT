@@ -17,23 +17,29 @@ INSTALL
   that contains these files. It:
     - installs VOPL3.VXD (C:\WINDOWS\SYSTEM, loads at boot),
     - installs the renderer (C:\VOPL3\VOPLSRV.EXE, autostarts at login).
-      You choose between two builds with identical sound output:
+      For the FM modes you choose between two builds with identical sound
+      output:
         1 = Nuked OPL3 (reference), 2 = Nuked OPL3 fast (about half the
         CPU use - recommended, especially on slower machines),
     - installs the control panel (C:\VOPL3\VOPLCFG.EXE; you choose whether
       it starts with Windows, minimized to the system tray),
-    - asks FM only vs FM + MIDI (see MIDI below; default FM only),
-    - patches SBEMUL.SYS so it stops claiming FM port 388 (keeps digital+MIDI).
+    - asks what VOPL3 handles: FM only, FM + MIDI, or MIDI only (see MIDI
+      below; default FM only),
+    - patches SBEMUL.SYS so it frees the ports VOPL3 takes over (keeps its
+      digital sound).
   Then REBOOT.
 
   If it says SBEMUL.SYS is "in use", finish that one step from MS-DOS mode
   (Start > Shut Down > Restart in MS-DOS mode), change to this folder and run:
-      SBPATCH.EXE C:\WINDOWS\SYSTEM32\DRIVERS\SBEMUL.SYS
+      SBPATCH.EXE C:\WINDOWS\SYSTEM32\DRIVERS\SBEMUL.SYS <mode>
+  where <mode> is the one you chose: fm, fmmidi or midionly.
 
 USE
   After reboot the renderer starts automatically. In your DOS game set
   Music = AdLib (or OPL3) and Sound FX = Sound Blaster. You then get OPL3
   music (via VOPL3) AND digital sound effects (via SBEMUL) at the same time.
+  With MIDI only, set Music = General MIDI (MPU-401, port 330) instead;
+  AdLib music stays silent in that mode (as it is without VOPL3).
 
 CONTROL PANEL (VOPLCFG.EXE)
   A small tray app for configuring and watching VOPL3 - no reboot needed:
@@ -60,18 +66,28 @@ TUNING (advanced - C:\VOPL3\VOPL3.INI, see the comments in the file)
   priority=...    auto (default) = realtime only while producing audio;
                   realtime = hold realtime always (pre-A04 behaviour);
                   normal = never raise (diagnostic).
+  idleclose=<s>   release the sound device after this many seconds of FM
+                  silence instead of streaming silence; 0 = never (default),
+                  otherwise 5-3600. Taken back automatically when a game
+                  plays FM again. Leave at 0 unless you have a reason (e.g.
+                  data corruption during file transfers between drives on
+                  some VIA chipsets). Applies live.
 
-MIDI (optional - only if you chose FM + MIDI at install)
+MIDI (optional - only if you chose FM + MIDI or MIDI only at install)
   Normally DOS-game MIDI plays through SBEMUL's fixed synth (Microsoft GS
-  Wavetable). Choosing FM + MIDI makes VOPL3 take over MPU-401 MIDI and send
-  it through the Windows MIDI Mapper, so it can play on ANY installed synth or
+  Wavetable). Choosing FM + MIDI or MIDI only makes VOPL3 take over MPU-401
+  MIDI and send it through the Windows MIDI Mapper, so it can play on ANY
+  installed synth or
   device - a software synth (Roland VSC, Yamaha S-YXG50, ...), a hardware
   wavetable, or an external module on a MIDI interface.
     - Pick the target in the VOPL3 control panel (VOPLCFG.EXE - easiest,
       applies live), in Control Panel > Multimedia > MIDI, or in
       C:\VOPL3\VOPL3.INI  [midi] device=  (65535 = MIDI Mapper (default), or a
       device index). Run MIDILIST.EXE to list devices and their indices.
-    - FM + MIDI replaces SBEMUL's MIDI. FM only leaves it untouched.
+    - FM + MIDI and MIDI only replace SBEMUL's MIDI. FM only leaves it
+      untouched.
+    - MIDI only leaves FM to SBEMUL: games detect an AdLib, but AdLib music
+      is silent.
     - Only UART-mode MPU-401 is supported.
 
 UNINSTALL
@@ -80,11 +96,15 @@ UNINSTALL
 ABOUT THE SBEMUL PATCH
   SBEMUL claims the AdLib FM port 388 only to fake AdLib *detection* - it makes
   no FM sound - and it tears down its entire emulation when another driver
-  takes 388. SBPATCH.EXE changes the four FM port entries inside your own
-  SBEMUL.SYS to (hopefully) unused ports and fixes the PE checksum, so SBEMUL
-  keeps its digital + MIDI and leaves 388 to VOPL3. It:
-    - locates the FM port table by byte pattern, required to match exactly
+  takes 388 (or the MIDI ports). SBPATCH.EXE changes the port entries VOPL3
+  needs in your chosen mode - the four FM ports, the two MPU-401 MIDI ports,
+  or both - inside your own SBEMUL.SYS to (hopefully) unused ports and fixes
+  the PE checksum, so SBEMUL keeps its digital sound and leaves those ports to
+  VOPL3. It:
+    - locates each port table by byte pattern, required to match exactly
       once (works across W98 builds, refuses unrecognised files),
+    - gives ports back to SBEMUL when you reinstall in a mode that no longer
+      needs them (e.g. FM + MIDI reinstalled as FM only),
     - tolerates files modified by other patches (e.g. the SB16-enable
       patch): a stale PE checksum only warns, and the patched file gets a
       correct checksum written back,
@@ -95,9 +115,10 @@ FILES
   INSTALL.BAT / UNINSTALL.BAT   installer / uninstaller
   INSTALL.REG / UNINSTALL.REG   registry entries
   MIDION.REG                    enables MIDI (applied if you choose FM + MIDI)
+  MIDIONLY.REG                  MIDI on, FM off (applied if you choose MIDI only)
   VOPLCFG.REG                   control-panel autostart (applied if chosen)
   SBPATCH.EXE                   the SBEMUL.SYS patcher
-  MIDILIST.EXE                  lists MIDI output devices (for FM + MIDI)
+  MIDILIST.EXE                  lists MIDI output devices (for the MIDI modes)
   VOPL3.VXD                     OPL3 (+ optional MPU-401 MIDI) port-trap VxD
   VOPLSRV.EXE                   renderer, Nuked OPL3 backend (LGPL 2.1)
   VOPLFAST.EXE                  renderer, Nuked-OPL3-fast backend (LGPL 2.1)

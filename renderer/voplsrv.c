@@ -39,6 +39,7 @@
 #define IOCTL_VOPL3_MIDI_DRAIN   0x1002
 #define IOCTL_VOPL3_MIDI_ENABLE  0x1003
 #define IOCTL_VOPL3_MIDI_VM_GONE 0x1004
+#define IOCTL_VOPL3_FM_ENABLE    0x1005
 
 #ifndef FILE_FLAG_DELAYED_ERROR
 #define FILE_FLAG_DELAYED_ERROR 0x10000000
@@ -60,7 +61,8 @@ static int       out_closed;       /* output device released while FM idle    */
 
 static HMIDIOUT  hmidi;            /* MPU-401 MIDI output, open only while used */
 static UINT      midi_dev = (UINT)MIDI_MAPPER;  /* device id; set from INI  */
-static int       midi_on;          /* user enabled FM+MIDI (registry Midi=1) */
+static int       midi_on;          /* mode includes MIDI (registry Midi=1)    */
+static int       fm_on;            /* mode includes FM (registry Fm, def. 1)  */
 static DWORD     midi_last;        /* GetTickCount of last MIDI byte          */
 static DWORD     midi_total;       /* total MIDI bytes fed to the synth       */
 static BYTE      midibuf[MIDIMAX]; /* raw MIDI bytes drained from the VxD    */
@@ -151,23 +153,24 @@ static void load_settings(void)
       idleclose_ms = s * 1000; }
 }
 
-/* MIDI on/off is an install-time choice stored in the registry (set by the
- * installer per the FM-only vs FM+MIDI prompt). Read it in USER MODE here -
- * NOT in the VxD - so the kernel driver stays free of registry/string code,
- * and so FM-only mode never even attempts to touch the MPU-401 ports, which
- * the VxD would otherwise grab before SBEMUL at boot and thereby break
- * SBEMUL's MIDI. */
-static int midi_enabled(void)
+/* The mode (FM only / FM + MIDI / MIDI only) is an install-time choice stored
+ * in the registry as two values, Fm and Midi (set by the installer). Read it
+ * in USER MODE here - NOT in the VxD - so the kernel driver stays free of
+ * registry/string code. The VxD traps a port range only when we ask, so a
+ * mode without FM never touches 388-38B and a mode without MIDI never touches
+ * 330/331 - ports SBEMUL keeps in that mode, and would stop working without.
+ * A missing Fm value means FM on (installs from before MIDI-only existed). */
+static DWORD reg_dword(const char *name, DWORD def)
 {
     HKEY  hk;
-    DWORD val = 0, cb = sizeof(val), type = 0;
+    DWORD val = def, cb = sizeof(val), type = 0;
     if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, "Software\\VOPL3", 0, KEY_READ, &hk)
             != ERROR_SUCCESS)
-        return 0;
-    if (RegQueryValueEx(hk, "Midi", NULL, &type, (BYTE *)&val, &cb) != ERROR_SUCCESS)
-        val = 0;
+        return def;
+    if (RegQueryValueEx(hk, name, NULL, &type, (BYTE *)&val, &cb) != ERROR_SUCCESS)
+        val = def;
     RegCloseKey(hk);
-    return val ? 1 : 0;
+    return val;
 }
 
 /* ===================== MPU-401 MIDI bridge =====================
@@ -326,6 +329,7 @@ static void status_publish(int active)
 {
     if (!g_stat) return;
     g_stat->midi_on    = midi_on;
+    g_stat->fm_on      = fm_on;
     g_stat->synth_open = hmidi ? 1 : 0;
     g_stat->midi_dev   = midi_dev;
     g_stat->realtime   = realtime;
@@ -629,12 +633,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     status_init();
     OPL3_Reset(&chip, RATE);
 
-    /* MPU-401 MIDI bridge - only if the user chose FM+MIDI at install. Tell
-     * the VxD to start trapping 0x330/0x331. The MIDI synth itself is opened
-     * lazily (service_midi) only when a game actually sends MIDI, and released
-     * when it goes quiet - never held open at idle. In FM-only mode we never
-     * touch the MIDI ports or open a synth at all. */
-    midi_on = midi_enabled();
+    /* MPU-401 MIDI bridge - only if the mode includes MIDI. Tell the VxD to
+     * start trapping 0x330/0x331. The MIDI synth itself is opened lazily
+     * (service_midi) only when a game actually sends MIDI, and released when
+     * the game's DOS box closes. In FM-only mode we never touch the MIDI
+     * ports or open a synth at all. */
+    midi_on = reg_dword("Midi", 0) ? 1 : 0;
+    fm_on   = reg_dword("Fm",   1) ? 1 : 0;
     if (midi_on) {
         DWORD ret = 0;
         DeviceIoControl(hvxd, IOCTL_VOPL3_MIDI_ENABLE, NULL, 0, NULL, 0, &ret, NULL);
@@ -642,10 +647,22 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
 
     hev = CreateEvent(NULL, FALSE, FALSE, NULL);
 
-    if (!audio_open()) {
-        MessageBox(NULL, "waveOutOpen failed - no usable Windows audio output.",
-                   "VOPL3 renderer", MB_OK | MB_ICONSTOP);
-        return 1;
+    /* FM - only if the mode includes it: trap 388-38B and open the audio
+     * output. In MIDI-only mode neither happens, ever: the OPL ports stay
+     * SBEMUL's, and the loop below runs as if the output had been released
+     * by idleclose=, with nothing that can reopen it - so there is no audio
+     * stream (no DMA, no synthesis), only MIDI servicing. */
+    if (fm_on) {
+        DWORD ret = 0;
+        DeviceIoControl(hvxd, IOCTL_VOPL3_FM_ENABLE, NULL, 0, NULL, 0, &ret, NULL);
+        if (!audio_open()) {
+            MessageBox(NULL, "waveOutOpen failed - no usable Windows audio output.",
+                       "VOPL3 renderer", MB_OK | MB_ICONSTOP);
+            return 1;
+        }
+    } else {
+        out_closed = 1;
+        idle       = 1;
     }
 
     /* Realtime priority is managed DYNAMICALLY in the loop below (see
@@ -709,7 +726,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
          * release, so the first of them targets "now" and the rest keep their
          * real spacing from there; audio_open()'s priming render applies them.
           */
-        if (out_closed && (!idle || !idleclose_ms)) {
+        if (fm_on && out_closed && (!idle || !idleclose_ms)) {
             DWORD now = GetTickCount();
             if (!retry_ms || (long)(now - retry_at) >= 0) {
                 if (audio_open()) {

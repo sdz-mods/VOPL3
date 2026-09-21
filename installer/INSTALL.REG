@@ -9,3 +9,4 @@ REGEDIT4
 
 [HKEY_LOCAL_MACHINE\Software\VOPL3]
 "Midi"=dword:00000000
+"Fm"=dword:00000001

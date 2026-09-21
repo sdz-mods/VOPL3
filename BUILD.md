@@ -65,11 +65,13 @@ Run these from the repo root, in order:
   `.C` sources and `MIDILIST.EXE` from `tests/MIDILIST.C`, then assembles
   `installer/dist/` — the VxD, both renderer builds, `VOPLCFG.EXE`,
   `SBPATCH.EXE`, `VOPLSTOP.EXE`, `MIDILIST.EXE`, and the CRLF-normalized
-  `INSTALL/UNINSTALL` `.BAT` + `.REG` (incl. `MIDION.REG`, `VOPLCFG.REG`) +
+  `INSTALL/UNINSTALL` `.BAT` + `.REG` (incl. `MIDION.REG`, `MIDIONLY.REG`,
+  `VOPLCFG.REG`) +
   `README.TXT` + `VOPL3.INI`. **`dist/` is the folder you copy to the Win98/ME
-  machine.** `INSTALL.BAT` asks which renderer build to install, whether the
-  control panel autostarts with Windows, and whether to enable MIDI (FM only
-  vs FM + MIDI); the chosen renderer lands as `C:\VOPL3\VOPLSRV.EXE`.
+  machine.** `INSTALL.BAT` asks what VOPL3 handles (FM only, FM + MIDI or
+  MIDI only), which renderer build to install (FM modes), and whether the
+  control panel autostarts with Windows; the chosen renderer lands as
+  `C:\VOPL3\VOPLSRV.EXE`.
 
 Build outputs (`vxd/vopl3.vxd`, `renderer/voplsrv.exe`, `renderer/voplfast.exe`,
 `installer/dist/`) are not committed — the build is deterministic (apart from
@@ -80,8 +82,9 @@ steps above.
 
 Copy `installer/dist/` to the target and run `INSTALL.BAT` from a DOS box. It
 installs the VxD (boot-loaded), installs the renderer (autostarts, hidden), and
-patches `SBEMUL.SYS` to free FM port 0x388. Reboot. In your DOS game set
-**Music = AdLib/OPL3** and **Sound FX = Sound Blaster**. `UNINSTALL.BAT` reverts
+patches `SBEMUL.SYS` to free the ports VOPL3 takes over in the chosen mode.
+Reboot. In your DOS game set **Music = AdLib/OPL3** (General MIDI in MIDI-only
+mode) and **Sound FX = Sound Blaster**. `UNINSTALL.BAT` reverts
 everything (restores the original `SBEMUL.SYS`, removes VOPL3). See
 [installer/README.TXT](installer/README.TXT) for details.
 
