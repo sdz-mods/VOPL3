@@ -228,7 +228,10 @@ static void refresh(void)
     char line[160], drv[16], ren[16];
 
     /* --- Virtual OPL3 section --- */
-    if (live)
+    if (live && s->ver >= 3 && s->fm_mode == 1 && s->rate)
+        sprintf(line, "Renderer: running      Backend: %s @ %u Hz",
+                s->backend ? "Nuked-OPL3-fast" : "Nuked OPL3", (unsigned)s->rate);
+    else if (live)
         sprintf(line, "Renderer: running      Backend: %s",
                 s->backend ? "Nuked-OPL3-fast" : "Nuked OPL3");
     else

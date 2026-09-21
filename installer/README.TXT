@@ -80,6 +80,13 @@ TUNING (advanced - C:\VOPL3\VOPL3.INI, see the comments in the file)
                   it (e.g. 480) if FM audio stutters in a regular pattern on
                   your sound driver; costs some FM latency. Applied at
                   renderer start.
+  rate=<hz>       output sample rate: 11025, 16000, 22050, 32000, 44100
+                  or 48000 (default; any other value counts as 48000). The
+                  OPL3 engine always runs at the chip's native 49716 Hz and
+                  is resampled to this rate, so its CPU use is the same at
+                  any rate. 44100 can spare Windows a sample-rate conversion
+                  on 44.1 kHz-native hardware. Applied at renderer start;
+                  falls back to 48000 if the driver refuses it.
   priority=...    auto (default) = realtime only while producing audio;
                   realtime = hold realtime always (pre-A04 behaviour);
                   normal = never raise (diagnostic).

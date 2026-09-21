@@ -21,10 +21,13 @@
 #include "opl3.h"
 #include "vopl3ipc.h"      /* shared status/control contract with VOPLCFG.EXE */
 
-#define RATE      48000
+#define RATE      48000        /* default + maximum output rate; rate=     */
 #ifndef FRAMES                 /* overridable (-dFRAMES=...) for buffering */
-#define FRAMES    480          /* per buffer: 10 ms                */
-#endif                         /* experiments on troublesome sound drivers */
+#define FRAMES    480          /* per buffer at 48 kHz: 10 ms; at other    */
+#endif                         /* rates scaled to the same duration (see   */
+                               /* set_rate). Also sizes the buffers.       */
+                               /* -d override: experiments on troublesome */
+                               /* sound drivers                            */
 #ifndef NBUF
 #define NBUF      16           /* default buffer count: ~160 ms (rides out */
 #endif                         /* scheduling gaps while DOOM hogs the CPU; */
@@ -54,6 +57,8 @@ static DWORD     drainbuf[DRAINMAX];
 static long      gain256 = 512;    /* output gain, 256 = 1.0x; set from INI */
 static UINT      volume_pct = 200; /* FM volume percent; set from INI         */
 static int       nbuf = NBUF;      /* buffers in flight; [renderer] buffer=  */
+static DWORD     rate = RATE;      /* output sample rate; [renderer] rate=    */
+static DWORD     frames = FRAMES;  /* frames per buffer at that rate          */
 static int       prio_mode;        /* 0=auto 1=realtime 2=normal; priority=  */
 static HANDLE    hev;              /* waveOut buffer-completion event         */
 static DWORD     idleclose_ms;     /* [renderer] idleclose=; 0 = never close  */
@@ -100,13 +105,51 @@ static void apply_gain(short *p, int n)
     }
 }
 
+/* VOPL3.INI next to the exe */
+static void ini_path(char *ini)
+{
+    DWORD n = GetModuleFileName(NULL, ini, MAX_PATH - 12);
+    while (n && ini[n - 1] != '\\') n--;
+    lstrcpy(ini + n, "VOPL3.INI");
+}
+
+/* Buffers keep their ~10 ms length at every rate: FRAMES is the count at
+ * 48 kHz, scaled down here (rounding down - 220 frames = 9.98 ms at 22050),
+ * so everything counted in buffers (idle detection, buffer=, the wake
+ * cadence) means the same time at any rate. */
+static void set_rate(DWORD r)
+{
+    rate   = r;
+    frames = (DWORD)FRAMES * r / RATE;
+}
+
+/* [renderer] rate=<hz>: the output sample rate - one of the standard rates
+ * below (default 48000); anything else is treated as 48000. Nuked would
+ * resample to any rate, but there is no point supporting anything besides
+ * the standard ones. Read ONCE, at startup - not in load_settings, which
+ * also runs on every control-panel reload: a new rate needs OPL3_Reset,
+ * which would wipe the chip's registers (the game's instrument setup)
+ * mid-game. The OPL3 engine's CPU cost is the same at any rate: both Nuked
+ * cores emulate the chip at its native 49716 Hz and always resample to this
+ * rate. Worth changing e.g. on 44.1k-native hardware, where rate=44100
+ * spares KMIXER a 48->44.1 conversion and the CPU time it takes. */
+static void load_rate(void)
+{
+    static const UINT ok[] = { 11025, 16000, 22050, 32000, 44100, 48000 };
+    char ini[MAX_PATH];
+    UINT r, i;
+    ini_path(ini);
+    r = GetPrivateProfileInt("renderer", "rate", RATE, ini);
+    for (i = 0; i < sizeof(ok) / sizeof(ok[0]); i++)
+        if (r == ok[i]) { set_rate(r); return; }
+    set_rate(RATE);
+}
+
 static void load_settings(void)
 {
     char ini[MAX_PATH];
     UINT pct;
-    DWORD n = GetModuleFileName(NULL, ini, sizeof(ini) - 12);
-    while (n && ini[n - 1] != '\\') n--;
-    lstrcpy(ini + n, "VOPL3.INI");
+    ini_path(ini);
     pct = GetPrivateProfileInt("renderer", "volume", 200, ini);
     if (pct > 400) pct = 400;
     volume_pct = pct;
@@ -334,6 +377,7 @@ static void status_publish(int active)
     if (!g_stat) return;
     g_stat->midi_on    = midi_on;
     g_stat->fm_mode    = fm_mode;
+    g_stat->rate       = rate;
     g_stat->synth_open = hmidi ? 1 : 0;
     g_stat->midi_dev   = midi_dev;
     g_stat->realtime   = realtime;
@@ -360,17 +404,22 @@ static void status_publish(int active)
  * ms delta (wrap-safe, deltas only). Guards: overdue events apply now;
  * a >2 s gap re-anchors (also covers the 32.7 s timestamp wrap); a runaway
  * lead (device clock slower than the ms clock) is compressed so latency
- * stays bounded. */
+ * stays bounded.
+ * The ms -> samples step carries its remainder (anch_frac, in thousandths of
+ * a sample) from event to event. At 48 kHz a ms is exactly 48 samples, but at
+ * e.g. 44.1 kHz it is 44.1: rounding each delta on its own would lose 0.1
+ * sample per event, the anchor would drift steadily behind the stream, and
+ * within seconds every write would land "overdue" - collapsing them back to
+ * per-drain timing, the very thing the timestamps are here to prevent. */
 #define PQMAX    8192              /* power of two */
-#define SPMS     (RATE / 1000)     /* samples per ms */
-#define MAXAHEAD (FRAMES * nbuf * 2)
+#define MAXAHEAD (frames * nbuf * 2)
 
 static DWORD pq_time[PQMAX];       /* absolute target sample */
 static WORD  pq_reg[PQMAX];
 static BYTE  pq_val[PQMAX];
 static DWORD pq_head, pq_tail;
 static DWORD stream_pos;           /* samples generated since start */
-static DWORD anch_t15, anch_smp, last_tgt;
+static DWORD anch_t15, anch_smp, anch_frac, last_tgt;
 static int   anch_ok;
 
 /* drain the VxD ring into the queue; returns entries drained */
@@ -382,9 +431,10 @@ static DWORD drain_events(void)
         return 0;
     n = ret >> 2;
     for (i = 0; i < n; i++) {
-        DWORD e   = drainbuf[i];
-        DWORD t15 = e >> 17;
+        DWORD e    = drainbuf[i];
+        DWORD t15  = e >> 17;
         DWORD tgt;
+        DWORD frac = 0;                     /* re-anchored: no remainder */
         if (!anch_ok) {
             tgt = stream_pos;
             anch_ok = 1;
@@ -393,15 +443,19 @@ static DWORD drain_events(void)
             if (dms > 2000) {                          /* long gap / wrap */
                 tgt = stream_pos;
             } else {
-                tgt = anch_smp + dms * SPMS;
-                if ((long)(tgt - stream_pos) < 0)      /* overdue: apply now */
-                    tgt = stream_pos;
-                else if (tgt - stream_pos > MAXAHEAD)  /* clock drift: compress */
-                    tgt = stream_pos + FRAMES;
+                DWORD acc = dms * rate + anch_frac;    /* milli-samples; fits:
+                                                        * 2000 * 48000 < 2^32 */
+                tgt  = anch_smp + acc / 1000;
+                frac = acc % 1000;
+                if ((long)(tgt - stream_pos) < 0) {    /* overdue: apply now */
+                    tgt = stream_pos;           frac = 0;
+                } else if (tgt - stream_pos > MAXAHEAD) { /* drift: compress */
+                    tgt = stream_pos + frames;  frac = 0;
+                }
             }
         }
-        if ((long)(tgt - last_tgt) < 0) tgt = last_tgt;   /* keep order */
-        anch_t15 = t15; anch_smp = tgt; last_tgt = tgt;
+        if ((long)(tgt - last_tgt) < 0) { tgt = last_tgt; frac = 0; } /* keep order */
+        anch_t15 = t15; anch_smp = tgt; anch_frac = frac; last_tgt = tgt;
 
         if (pq_tail - pq_head >= PQMAX) {              /* full: apply oldest */
             OPL3_WriteRegBuffered(&chip, pq_reg[pq_head & (PQMAX - 1)],
@@ -416,7 +470,7 @@ static DWORD drain_events(void)
     return n;
 }
 
-/* generate FRAMES frames, applying queued writes at their sample offsets.
+/* generate one buffer (frames), applying queued writes at their sample offsets.
  * Writes go through OPL3_WriteRegBuffered, NOT OPL3_WriteReg: buffered
  * writes get the chip's real minimum spacing (2 chip samples, ~40 us -
  * the ISA-bus pacing every real OPL3 ever saw). Slamming a whole burst of
@@ -427,8 +481,8 @@ static DWORD drain_events(void)
 static void render_buffer(short *dst)
 {
     DWORD done = 0;
-    while (done < FRAMES) {
-        DWORD n = FRAMES - done;
+    while (done < frames) {
+        DWORD n = frames - done;
         while (pq_head != pq_tail &&
                (long)(pq_time[pq_head & (PQMAX - 1)] - stream_pos) <= 0) {
             OPL3_WriteRegBuffered(&chip, pq_reg[pq_head & (PQMAX - 1)],
@@ -489,10 +543,10 @@ static int audio_open(void)
 
     wf.wFormatTag      = WAVE_FORMAT_PCM;
     wf.nChannels       = 2;
-    wf.nSamplesPerSec  = RATE;
+    wf.nSamplesPerSec  = rate;
     wf.wBitsPerSample  = 16;
     wf.nBlockAlign     = 4;
-    wf.nAvgBytesPerSec = RATE * 4;
+    wf.nAvgBytesPerSec = rate * 4;
     wf.cbSize          = 0;
 
     if (waveOutOpen(&hwo, WAVE_MAPPER, &wf, (DWORD)hev, 0, CALLBACK_EVENT)
@@ -504,13 +558,13 @@ static int audio_open(void)
     /* prime all buffers */
     for (i = 0; i < nbuf; i++) {
         hdr[i].lpData         = (char *)bufs[i];
-        hdr[i].dwBufferLength = FRAMES * 4;
+        hdr[i].dwBufferLength = frames * 4;
         hdr[i].dwFlags        = 0;
         hdr[i].dwLoops        = 0;
         waveOutPrepareHeader(hwo, &hdr[i], sizeof(WAVEHDR));
         drain_events();
         render_buffer(bufs[i]);
-        apply_gain(bufs[i], FRAMES * 2);
+        apply_gain(bufs[i], frames * 2);
         waveOutWrite(hwo, &hdr[i], sizeof(WAVEHDR));
     }
     return 1;
@@ -634,8 +688,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     timeBeginPeriod(1);
 
     load_settings();
+    load_rate();
     status_init();
-    OPL3_Reset(&chip, RATE);
+    OPL3_Reset(&chip, rate);
 
     /* MPU-401 MIDI bridge - only if VOPL3 handles MIDI. Tell the VxD to start
      * trapping 0x330/0x331. The MIDI synth itself is opened lazily
@@ -659,8 +714,17 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
      * stream (no DMA, no synthesis), only MIDI servicing. */
     if (fm_on) {
         DWORD ret = 0;
+        int   ok;
         DeviceIoControl(hvxd, IOCTL_VOPL3_FM_ENABLE, NULL, 0, NULL, 0, &ret, NULL);
-        if (!audio_open()) {
+        /* A driver may refuse an unusual rate=. Nothing has played yet, so
+         * fall back to the default rather than give up. */
+        ok = audio_open();
+        if (!ok && rate != RATE) {
+            set_rate(RATE);
+            OPL3_Reset(&chip, rate);
+            ok = audio_open();
+        }
+        if (!ok) {
             MessageBox(NULL, "waveOutOpen failed - no usable Windows audio output.",
                        "VOPL3 renderer", MB_OK | MB_ICONSTOP);
             return 1;
@@ -760,16 +824,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
                 if (!idle) {
                     int silent;
                     render_buffer(bufs[i]);
-                    silent = buf_silent(bufs[i], FRAMES * 2);  /* raw output */
-                    apply_gain(bufs[i], FRAMES * 2);
+                    silent = buf_silent(bufs[i], frames * 2);  /* raw output */
+                    apply_gain(bufs[i], frames * 2);
                     if (n == 0 && pq_head == pq_tail && silent) {
                         if (++silence >= IDLE_AFTER) idle = 1;
                     } else if (n == 0) {
                         silence = 0;           /* still sounding (decay etc.) */
                     }
                 } else {
-                    ZeroMemory(bufs[i], FRAMES * 4);  /* true silence while idle */
-                    stream_pos += FRAMES;             /* time passes while idle */
+                    ZeroMemory(bufs[i], frames * 4);  /* true silence while idle */
+                    stream_pos += frames;             /* time passes while idle */
                 }
                 hdr[i].dwFlags &= ~WHDR_DONE;
                 waveOutWrite(hwo, &hdr[i], sizeof(WAVEHDR));
