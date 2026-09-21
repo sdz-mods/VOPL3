@@ -8,6 +8,7 @@ verifying the pipeline. Each has its own `build-*.ps1`; build outputs (`.EXE`,
 | Program | Runs on | What it does | Build |
 |---|---|---|---|
 | `ADLIBTST.ASM` | Win9x DOS box | Characterizes what is actually at the OPL ports (real chip vs SBEMUL's fake trap vs VOPL3): raw port reads, AdLib presence detection, OPL2/OPL3 signature, timer-period measurement. Writes `REPORT.TXT`. | `build-adlibtst.ps1` (**NASM**) |
+| `OPLHANG.C` | Win9x DOS box | Keys on a sustaining OPL3 chord (on both register banks) and exits without a key-off, like a game that quits without silencing the chip. Close the DOS box afterwards: VOPL3 keys the notes off, so the chord fades out instead of playing on. `OPLHANG /OFF` keys off every voice. | `build-oplhang.ps1` |
 | `OPLTUNE.C` | Win9x DOS box | Plays a looping OPL3 arpeggio but *yields the CPU* between notes. If this is smooth while a game stutters, the bottleneck is CPU starvation of the renderer, not buffering. | `build-opltune.ps1` |
 | `OPLWIN32.C` | Win9x (Win32) | Writes OPL registers to 0x388–0x38B from a normal ring-3 Win32 process, to confirm the VxD trap catches more than DOS boxes. Plays a scale. | `build-oplwin32.ps1` |
 | `SBTEST.C` | Win9x DOS box | Resets the SoundBlaster DSP (0x220) and reads its version, to check SBEMUL's digital side is still alive (e.g. before/after installing VOPL3). | `build-sbtest.ps1` |
@@ -17,7 +18,7 @@ verifying the pipeline. Each has its own `build-*.ps1`; build outputs (`.EXE`,
 ## Toolchains
 
 - **Open Watcom 2.0** (`tools/ow`, same as the main build — see [../BUILD.md](../BUILD.md))
-  builds the C programs: the DOS ones (`OPLTUNE`, `SBTEST`) as 16-bit real-mode
+  builds the C programs: the DOS ones (`OPLHANG`, `OPLTUNE`, `SBTEST`) as 16-bit real-mode
   `.EXE`, the Win32 ones (`OPLWIN32`, `VOPLSTAT`) as 32-bit.
 - **NASM** (<https://www.nasm.us/>) builds `ADLIBTST.ASM` into a DOS `.COM`. Put
   `nasm.exe` at `tools/nasm/nasm.exe` or on `PATH`.
