@@ -225,7 +225,7 @@ static void refresh(void)
     DWORD n = vxd_stat(st);
     VOPL3_STATUS *s = rstat();
     int live = renderer_live(s);
-    char line[160], drv[8], ren[8];
+    char line[160], drv[16], ren[16];
 
     /* --- Virtual OPL3 section --- */
     if (live)
@@ -334,7 +334,7 @@ static void build_ui(HWND w)
     mk(w, "STATIC", "ports 388-38B -> VXD trap -> VOPLSRV (Nuked OPL3)",
        0, 20, 26, 368, 18, 0);
     mk(w, "STATIC", "-> waveOut -> KMIXER -> sound card",
-       0, ax_opl, 44, 312, 18, 0);
+       0, ax_opl, 44, 388 - ax_opl, 18, 0);
     mk(w, "STATIC", "Emulates the AdLib/OPL3 FM chip in software;",
        0, 20, 68, 368, 18, 0);
     mk(w, "STATIC", "works for both DOS and Windows programs.",
@@ -357,7 +357,7 @@ static void build_ui(HWND w)
     mk(w, "STATIC", "ports 330-331 -> VXD trap -> VOPLSRV MIDI parser",
        0, 20, 260, 368, 18, 0);
     mk(w, "STATIC", "-> midiOut -> any installed MIDI device",
-       0, ax_midi, 278, 312, 18, 0);
+       0, ax_midi, 278, 388 - ax_midi, 18, 0);
     mk(w, "STATIC", "Bridges MIDI from DOS programs only;",
        0, 20, 302, 368, 18, 0);
     mk(w, "STATIC", "Windows MIDI applications are unaffected.",
