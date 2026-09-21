@@ -54,6 +54,9 @@ static long      gain256 = 512;    /* output gain, 256 = 1.0x; set from INI */
 static UINT      volume_pct = 200; /* FM volume percent; set from INI         */
 static int       nbuf = NBUF;      /* buffers in flight; [renderer] buffer=  */
 static int       prio_mode;        /* 0=auto 1=realtime 2=normal; priority=  */
+static HANDLE    hev;              /* waveOut buffer-completion event         */
+static DWORD     idleclose_ms;     /* [renderer] idleclose=; 0 = never close  */
+static int       out_closed;       /* output device released while FM idle    */
 
 static HMIDIOUT  hmidi;            /* MPU-401 MIDI output, open only while used */
 static UINT      midi_dev = (UINT)MIDI_MAPPER;  /* device id; set from INI  */
@@ -134,6 +137,18 @@ static void load_settings(void)
       if      (!lstrcmpi(ps, "realtime")) prio_mode = 1;
       else if (!lstrcmpi(ps, "normal"))   prio_mode = 2;
       else                                prio_mode = 0; }
+
+    /* [renderer] idleclose=<seconds> (default 0 = off, clamped 5-3600):
+     * after this long with the FM chip silent, RELEASE the output device
+     * (waveOutReset/Unprepare/Close) instead of continuing to stream zeroed
+     * buffers; reopen on the first OPL register write. Idle-skip alone stops
+     * the synthesis but keeps the stream - and therefore the sound card's DMA
+     * engine keeps running forever.
+     * Applies live on a control-panel reload. */
+    { UINT s = GetPrivateProfileInt("renderer", "idleclose", 0, ini);
+      if (s && s < 5) s = 5;
+      if (s > 3600)   s = 3600;
+      idleclose_ms = s * 1000; }
 }
 
 /* MIDI on/off is an install-time choice stored in the registry (set by the
@@ -313,6 +328,7 @@ static void status_publish(int active)
     g_stat->midi_dev   = midi_dev;
     g_stat->realtime   = realtime;
     g_stat->active     = active;
+    g_stat->out_open   = hwo ? 1 : 0;
     g_stat->volume     = volume_pct;
     g_stat->midi_bytes = midi_total;
     g_stat->frames++;
@@ -448,18 +464,72 @@ static int buf_silent(const short *p, int n)
     return 1;
 }
 
+/* ---- output device open / release ----
+ * Split out of WinMain so the idle-close path ([renderer] idleclose=) can
+ * cycle the device with exactly the same sequence used at startup and at
+ * shutdown.The MIDI synth is deliberately untouched by
+ * either: it is a different device with its own lifecycle (see service_midi),
+ * and FM idle says nothing about whether MIDI is flowing. */
+static int audio_open(void)
+{
+    WAVEFORMATEX wf;
+    int i;
+
+    if (hwo) return 1;
+
+    wf.wFormatTag      = WAVE_FORMAT_PCM;
+    wf.nChannels       = 2;
+    wf.nSamplesPerSec  = RATE;
+    wf.wBitsPerSample  = 16;
+    wf.nBlockAlign     = 4;
+    wf.nAvgBytesPerSec = RATE * 4;
+    wf.cbSize          = 0;
+
+    if (waveOutOpen(&hwo, WAVE_MAPPER, &wf, (DWORD)hev, 0, CALLBACK_EVENT)
+            != MMSYSERR_NOERROR) {
+        hwo = NULL;
+        return 0;
+    }
+
+    /* prime all buffers */
+    for (i = 0; i < nbuf; i++) {
+        hdr[i].lpData         = (char *)bufs[i];
+        hdr[i].dwBufferLength = FRAMES * 4;
+        hdr[i].dwFlags        = 0;
+        hdr[i].dwLoops        = 0;
+        waveOutPrepareHeader(hwo, &hdr[i], sizeof(WAVEHDR));
+        drain_events();
+        render_buffer(bufs[i]);
+        apply_gain(bufs[i], FRAMES * 2);
+        waveOutWrite(hwo, &hdr[i], sizeof(WAVEHDR));
+    }
+    return 1;
+}
+
+/* Returns 1 if the device is now genuinely ours no longer. The close is
+ * checked: waveOutClose fails (MMSYSERR_STILLPLAYING) if any header is still
+ * queued, which also catches a waveOutUnprepareHeader that refused. Nulling
+ * hwo regardless would leak the handle and publish "output released" while we
+ * still held the device - the one state the idleclose= test must be able to
+ * trust. On failure we keep hwo and the caller stays open. */
+static int audio_release(void)
+{
+    int i;
+    if (!hwo) return 1;
+    waveOutReset(hwo);                     /* returns all queued buffers */
+    for (i = 0; i < nbuf; i++)
+        waveOutUnprepareHeader(hwo, &hdr[i], sizeof(WAVEHDR));
+    if (waveOutClose(hwo) != MMSYSERR_NOERROR)
+        return 0;
+    hwo = NULL;
+    return 1;
+}
+
 /* ---- clean shutdown ----
  * Stop the audio while the process is still healthy. */
 static void audio_stop(void)
 {
-    int i;
-    if (hwo) {
-        waveOutReset(hwo);                 /* returns all queued buffers */
-        for (i = 0; i < nbuf; i++)
-            waveOutUnprepareHeader(hwo, &hdr[i], sizeof(WAVEHDR));
-        waveOutClose(hwo);
-        hwo = NULL;
-    }
+    audio_release();
     if (hmidi) {
         midiOutReset(hmidi);               /* all-notes-off on the synth */
         midiOutClose(hmidi);
@@ -515,11 +585,13 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
 {
     static WNDCLASS wc;                    /* static: zero-initialized */
-    WAVEFORMATEX wf;
-    HANDLE       hev;
     int   i;
     int   idle     = 0;                    /* skipping synthesis (chip silent) */
     DWORD silence  = 0;                    /* consecutive near-silent buffers  */
+    int   idle_timed = 0;                  /* idle_since holds a valid stamp   */
+    DWORD idle_since = 0;                  /* tick the current idle run began  */
+    DWORD retry_at   = 0;                  /* next reopen attempt (tick)       */
+    DWORD retry_ms   = 0;                  /* reopen backoff, 0 = none pending */
 
     hvxd = CreateFile("\\\\.\\VOPL3", 0, 0, NULL, 0, FILE_FLAG_DELAYED_ERROR, NULL);
     if (hvxd == INVALID_HANDLE_VALUE) {
@@ -568,32 +640,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
 
     hev = CreateEvent(NULL, FALSE, FALSE, NULL);
 
-    wf.wFormatTag      = WAVE_FORMAT_PCM;
-    wf.nChannels       = 2;
-    wf.nSamplesPerSec  = RATE;
-    wf.wBitsPerSample  = 16;
-    wf.nBlockAlign     = 4;
-    wf.nAvgBytesPerSec = RATE * 4;
-    wf.cbSize          = 0;
-
-    if (waveOutOpen(&hwo, WAVE_MAPPER, &wf, (DWORD)hev, 0, CALLBACK_EVENT)
-            != MMSYSERR_NOERROR) {
+    if (!audio_open()) {
         MessageBox(NULL, "waveOutOpen failed - no usable Windows audio output.",
                    "VOPL3 renderer", MB_OK | MB_ICONSTOP);
         return 1;
-    }
-
-    /* prime all buffers */
-    for (i = 0; i < nbuf; i++) {
-        hdr[i].lpData         = (char *)bufs[i];
-        hdr[i].dwBufferLength = FRAMES * 4;
-        hdr[i].dwFlags        = 0;
-        hdr[i].dwLoops        = 0;
-        waveOutPrepareHeader(hwo, &hdr[i], sizeof(WAVEHDR));
-        drain_events();
-        render_buffer(bufs[i]);
-        apply_gain(bufs[i], FRAMES * 2);
-        waveOutWrite(hwo, &hdr[i], sizeof(WAVEHDR));
     }
 
     /* Realtime priority is managed DYNAMICALLY in the loop below (see
@@ -611,10 +661,15 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
      * bursts a 100 ms cadence audibly clumps the MIDI stream.
      * MsgWaitForMultipleObjects (QS_ALLINPUT covers sent messages too) also
      * wakes for window messages, so the hidden window receives
-     * WM_ENDSESSION/WM_CLOSE without a second thread. */
+     * WM_ENDSESSION/WM_CLOSE without a second thread.
+     * While the output is released (idleclose=) there are no completions at
+     * all, so the timeout is the only thing driving the loop: shorten it to
+     * 10 ms there, or up to 100 ms of it would be added to the delay before
+     * we even notice the register write that must reopen the device.*/
     for (;;) {
         DWORD wr = MsgWaitForMultipleObjects(1, &hev, FALSE,
-                                             hmidi ? 10 : 100, QS_ALLINPUT);
+                                             (out_closed || hmidi) ? 10 : 100,
+                                             QS_ALLINPUT);
         if (wr == WAIT_OBJECT_0 + 1) {
             MSG m;
             while (PeekMessage(&m, NULL, 0, 0, PM_REMOVE)) {
@@ -644,7 +699,30 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
                 silence = 0;
             }
         }
-        for (i = 0; i < nbuf; i++) {
+
+        /* ---- idleclose= : reopen ----
+         * The chip was touched (or the knob was turned off live) while the
+         * device was released - take it back. Writes drained above were
+         * queued against the frozen stream_pos and the anchor was cleared on
+         * release, so the first of them targets "now" and the rest keep their
+         * real spacing from there; audio_open()'s priming render applies them.
+          */
+        if (out_closed && (!idle || !idleclose_ms)) {
+            DWORD now = GetTickCount();
+            if (!retry_ms || (long)(now - retry_at) >= 0) {
+                if (audio_open()) {
+                    out_closed = 0;
+                    retry_ms   = 0;
+                } else {
+                    retry_ms = retry_ms ? (retry_ms < 5000 ? retry_ms * 2 : 5000)
+                                        : 100;
+                    retry_at = now + retry_ms;
+                }
+            }
+        }
+
+        /* No completions to service while the device is released. */
+        for (i = 0; !out_closed && i < nbuf; i++) {
             if (hdr[i].dwFlags & WHDR_DONE) {
                 DWORD n = drain_events();
                 if (n) {                       /* chip touched: (re)start */
@@ -669,19 +747,54 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
                 waveOutWrite(hwo, &hdr[i], sizeof(WAVEHDR));
             }
         }
+        /* ---- idleclose= : release ----
+         * Idle-skip has already stopped the synthesis, but the stream (and
+         * with it the card's DMA engine) keeps running on zeroed buffers. If
+         * the user asked for it, drop the device once the chip has been
+         * silent for idleclose= seconds. Timed from the start of the idle
+         * run, so a game that pauses briefly never reaches it.
+         * Clearing anch_ok makes the first write after the reopen re-anchor
+         * at the current stream_pos: the position stops advancing while the
+         * device is gone, so without this a gap under the drain code's 2 s
+         * re-anchor threshold would schedule that write far in the future
+         * (it self-corrects via the MAXAHEAD clamp, but only after mangling
+         * the spacing of the first notes back).
+         * MIDI is unaffected - different device, and it may well be playing
+         * while the FM chip is silent. */
+        if (idle && !idle_timed) { idle_since = GetTickCount(); idle_timed = 1; }
+        if (!idle) idle_timed = 0;
+        if (idleclose_ms && idle && idle_timed && !out_closed &&
+                GetTickCount() - idle_since >= idleclose_ms) {
+            if (audio_release()) {
+                out_closed = 1;
+                anch_ok    = 0;
+                retry_ms   = 0;
+            } else {
+                /* Could not let go of it. Stay open, and wait a full
+                 * idleclose interval before trying again rather than
+                 * hammering waveOutClose on every wake. */
+                idle_timed = 0;
+            }
+        }
+
         /* Priority per [renderer] priority= mode. auto: realtime while FM
          * plays (chip not idle) OR MIDI is actively flowing (a byte within
          * MIDI_RT_MS); normal otherwise. Note auto tracks MIDI ACTIVITY, not
          * whether the synth is open - during an in-game gap the synth stays
-         * open but there is nothing to keep up with, so we drop to normal. */
+         * open but there is nothing to keep up with, so we drop to normal.
+         * out_closed is checked as well as idle: while the device is
+         * released, idle stays 0 from the moment writes arrive until the
+         * reopen succeeds, and a reopen that keeps failing must not leave us
+         * holding realtime with no audio output at all. */
         if (prio_mode == 1)      { if (!realtime) go_realtime(); }
         else if (prio_mode == 2) { if (realtime)  go_normal();   }
         else {
-            int busy = !idle || (GetTickCount() - midi_last) < MIDI_RT_MS;
+            int busy = (!idle && !out_closed)
+                    || (GetTickCount() - midi_last) < MIDI_RT_MS;
             if (busy && !realtime)      go_realtime();
             else if (!busy && realtime) go_normal();
         }
-        status_publish(!idle);
+        status_publish(!idle && !out_closed);
     }
     /* not reached */
 }

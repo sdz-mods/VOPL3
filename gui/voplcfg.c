@@ -237,7 +237,9 @@ static void refresh(void)
 
     if (live)
         sprintf(line, "FM: %s      Priority: %s",
-                s->active ? "playing" : "idle",
+                s->active               ? "playing" :
+                (s->ver < 2 || s->out_open) ? "idle"
+                                        : "idle (output released)",
                 s->realtime ? "realtime" : "normal");
     else
         strcpy(line, "FM: -      Priority: -");

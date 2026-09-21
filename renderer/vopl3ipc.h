@@ -42,7 +42,7 @@
 /* --- renderer status shared memory ---------------------------------------- */
 #define VOPL3_STATUS_NAME  "VOPL3_STATUS"
 #define VOPL3_STATUS_MAGIC 0x33504F56u   /* 'VOP3' little-endian */
-#define VOPL3_STATUS_VER   1
+#define VOPL3_STATUS_VER   2   /* 2: out_open claimed from reserved[0] */
 
 /* --- renderer control (window messages to the "VOPLSRV" window) ------------
  * Values are obtained at runtime via RegisterWindowMessage(name) on both
@@ -70,7 +70,11 @@ typedef struct {
     DWORD frames;       /* buffers rendered so far (liveness heartbeat)  */
     DWORD midi_bytes;   /* total MPU-401 bytes fed to the synth          */
     DWORD tick;         /* GetTickCount() at last update (staleness)     */
-    DWORD reserved[3];  /* future fields without breaking the ABI        */
+    DWORD out_open;     /* waveOut currently open (0 = released at idle,
+                         * see [renderer] idleclose=). Claimed from the
+                         * reserved words, so the struct size is unchanged
+                         * and an older GUI simply reads it as 0.         */
+    DWORD reserved[2];  /* future fields without breaking the ABI        */
 } VOPL3_STATUS;
 #endif
 
