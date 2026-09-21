@@ -93,11 +93,20 @@ static UINT          g_msg_panic;   /* RegisterWindowMessage(VOPL3_MSG_PANIC)  *
  * backend: Nuked's OPL3_WriteRegBuffered does it (see render_buffer), and the
  * DBOPL glue paces them the same way (see dbopl/dbopl_glue.cpp for why that
  * matters - some music depends on the gaps). */
+#ifdef VOPL3_CAPTURE                /* test builds only - see cap_put */
+static void cap_put(DWORD rec);
+#define CAP(rec) cap_put(rec)
+#else
+#define CAP(rec) ((void)0)
+#endif
 #ifdef VOPL3_DBOPL
 #define BACKEND_ID 2                /* built against DOSBox's DBOPL */
-static void chip_reset(DWORD r)                  { dbopl_reset(r); }
-static void chip_write(WORD reg, BYTE val)       { dbopl_write(reg, val); }
-static void chip_generate(short *dst, DWORD n)   { dbopl_generate(dst, n); }
+static void chip_reset(DWORD r)
+    { CAP(0x40000000UL | r); dbopl_reset(r); }
+static void chip_write(WORD reg, BYTE val)
+    { CAP(((DWORD)reg << 8) | val); dbopl_write(reg, val); }
+static void chip_generate(short *dst, DWORD n)
+    { CAP(0x80000000UL | n); dbopl_generate(dst, n); }
 #else
 #ifdef VOPL3_FAST
 #define BACKEND_ID 1                /* built against nuked-opl3-fast */
@@ -105,9 +114,12 @@ static void chip_generate(short *dst, DWORD n)   { dbopl_generate(dst, n); }
 #define BACKEND_ID 0                /* built against nuked-opl3 (reference) */
 #endif
 static opl3_chip chip;
-static void chip_reset(DWORD r)                  { OPL3_Reset(&chip, r); }
-static void chip_write(WORD reg, BYTE val)       { OPL3_WriteRegBuffered(&chip, reg, val); }
-static void chip_generate(short *dst, DWORD n)   { OPL3_GenerateStream(&chip, dst, n); }
+static void chip_reset(DWORD r)
+    { CAP(0x40000000UL | r); OPL3_Reset(&chip, r); }
+static void chip_write(WORD reg, BYTE val)
+    { CAP(((DWORD)reg << 8) | val); OPL3_WriteRegBuffered(&chip, reg, val); }
+static void chip_generate(short *dst, DWORD n)
+    { CAP(0x80000000UL | n); OPL3_GenerateStream(&chip, dst, n); }
 #endif
 
 /* ---- FM volume boost ----
@@ -135,6 +147,56 @@ static void ini_path(char *ini)
     while (n && ini[n - 1] != '\\') n--;
     lstrcpy(ini + n, "VOPL3.INI");
 }
+
+#ifdef VOPL3_CAPTURE
+/* ---- debug capture (test builds only: -dVOPL3_CAPTURE) ----
+ * Records exactly what the emulator receives - every reset, register write
+ * and generate call, in order - to CAPTURE.BIN next to the exe, so a problem
+ * heard here can be replayed bit-exactly offline. One DWORD per record:
+ *   0x000rrrvv  register write (reg << 8 | val)
+ *   0x8nnnnnnn  generate n frames
+ *   0x4rrrrrrr  reset at rate r
+ * Buffered in memory; written out when the buffer fills, about once a second
+ * (cap_tick) and at exit, so a crash loses at most a second of it. */
+#define CAPBUF 16384
+static HANDLE cap_h = INVALID_HANDLE_VALUE;
+static int    cap_failed;
+static DWORD  cap_buf[CAPBUF], cap_n, cap_last;
+
+static void cap_flush(void)
+{
+    DWORD w;
+    if (cap_h != INVALID_HANDLE_VALUE && cap_n)
+        WriteFile(cap_h, cap_buf, cap_n * 4, &w, NULL);
+    cap_n = 0;
+}
+
+static void cap_put(DWORD rec)
+{
+    if (cap_h == INVALID_HANDLE_VALUE) {
+        char p[MAX_PATH];
+        if (cap_failed) return;
+        ini_path(p);
+        lstrcpy(p + lstrlen(p) - 9, "CAPTURE.BIN");     /* in place of VOPL3.INI */
+        cap_h = CreateFile(p, GENERIC_WRITE, FILE_SHARE_READ, NULL,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (cap_h == INVALID_HANDLE_VALUE) { cap_failed = 1; return; }
+    }
+    cap_buf[cap_n++] = rec;
+    if (cap_n == CAPBUF) cap_flush();
+}
+
+static void cap_tick(void)
+{
+    if (GetTickCount() - cap_last >= 1000) { cap_flush(); cap_last = GetTickCount(); }
+}
+
+static void cap_close(void)
+{
+    cap_flush();
+    if (cap_h != INVALID_HANDLE_VALUE) { CloseHandle(cap_h); cap_h = INVALID_HANDLE_VALUE; }
+}
+#endif
 
 /* Buffers keep their ~10 ms length at every rate: FRAMES is the count at
  * 48 kHz, scaled down here (rounding down - 220 frames = 9.98 ms at 22050),
@@ -615,6 +677,9 @@ static int audio_release(void)
  * Stop the audio while the process is still healthy. */
 static void audio_stop(void)
 {
+#ifdef VOPL3_CAPTURE
+    cap_close();
+#endif
     audio_release();
     if (hmidi) {
         midiOutReset(hmidi);               /* all-notes-off on the synth */
@@ -909,6 +974,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
             else if (!busy && realtime) go_normal();
         }
         status_publish(!idle && !out_closed);
+#ifdef VOPL3_CAPTURE
+        cap_tick();
+#endif
     }
     /* not reached */
 }
