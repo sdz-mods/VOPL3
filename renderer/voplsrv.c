@@ -230,10 +230,10 @@ static void midi_feed(BYTE b)
 /* Open the MIDI synth lazily (on the first byte since it went quiet), NOT at
  * startup and NOT continuously.
  *
- * When to release it: primarily when the DOS box that was playing MIDI closes
- * (the VxD flags that via IOCTL_VOPL3_MIDI_VM_GONE) - so the synth survives
- * in-game musical gaps without losing its channel state. */
-#define MIDI_CLOSE_MS 30000        /* backstop: release after this quiet gap  */
+ * When to release it: when the DOS box that was playing MIDI closes (the VxD
+ * flags that via IOCTL_VOPL3_MIDI_VM_GONE) - so the synth survives in-game
+ * musical gaps of any length without losing its channel state. */
+#define MIDI_CLOSE_MS 30000        /* untracked sources: release after this */
 #define MIDI_RT_MS    2000         /* "MIDI recently flowing" window (priority) */
 
 static void midi_open(void)
@@ -257,8 +257,8 @@ static void midi_close(void)
 }
 
 /* Drain the VxD MIDI ring; open the synth on activity, release it when the
- * game's DOS box closes (VM gone) or after the long backstop. Called every
- * loop wake (whether or not the synth is open). */
+ * game's DOS box closes (VM gone), or after the timer for an untracked
+ * source. Called every loop wake (whether or not the synth is open). */
 static void service_midi(void)
 {
     DWORD ret = 0, i;
@@ -274,10 +274,12 @@ static void service_midi(void)
         return;
     }
     if (hmidi) {                               /* quiet right now - release? */
-        DWORD gone = 0, r = 0;
+        DWORD st[2] = { 0, 0 }, r = 0;         /* [0] VM gone, [1] DOS box */
         DeviceIoControl(hvxd, IOCTL_VOPL3_MIDI_VM_GONE, NULL, 0,
-                        &gone, sizeof(gone), &r, NULL);
-        if (gone || (GetTickCount() - midi_last) > MIDI_CLOSE_MS)
+                        st, sizeof(st), &r, NULL);
+        if (r < 8) st[1] = 0;                  /* older VxD: untracked */
+        if (st[0] ||
+            (!st[1] && (GetTickCount() - midi_last) > MIDI_CLOSE_MS))
             midi_close();
     }
 }

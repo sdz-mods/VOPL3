@@ -343,6 +343,9 @@ void __stdcall mpu_write(DWORD port, DWORD data, DWORD vm)
     if (S.mpu_uart && S.midi_addr) {      /* UART mode: this is a MIDI byte */
         ((BYTE *)S.midi_addr)[S.midi_head & (MIDI_RING_SIZE - 1)] = d;
         S.midi_head++;
+        if (vm != S.midi_vm)              /* a new source: a gone-flag still  */
+            S.midi_vm_gone = 0;           /* pending is about an older VM, and
+                                           * would close THIS one's synth      */
         S.midi_vm = vm;                   /* remember who's playing MIDI, so we
                                            * notice when its DOS box closes    */
     }
@@ -606,7 +609,20 @@ void __stdcall vm_destroyed(DWORD vm)
 #define IOCTL_VOPL3_STAT         0x1001 /* out: [head,tail,lost,...]         */
 #define IOCTL_VOPL3_MIDI_DRAIN   0x1002 /* out: raw MPU-401 MIDI bytes        */
 #define IOCTL_VOPL3_MIDI_ENABLE  0x1003 /* start trapping 0x330/0x331 (once)  */
-#define IOCTL_VOPL3_MIDI_VM_GONE 0x1004 /* out: 1 if MIDI VM terminated (1-shot) */
+#define IOCTL_VOPL3_MIDI_VM_GONE 0x1004 /* out: [0] 1 if MIDI VM terminated
+                                         * (1-shot); [1] 1 if the MIDI source
+                                         * is a DOS box, 0 if the System VM or
+                                         * unknown (only with an 8-byte buffer) */
+
+static DWORD sys_vm_handle(void)
+{
+    DWORD h;
+    _asm push ebx
+    VMMCall(Get_Sys_VM_Handle);
+    _asm mov h, ebx
+    _asm pop ebx
+    return h;
+}
 
 /* VxD revision reported by STAT out[9]: up to 4 ASCII chars, little-endian,
  * printed as a string by readers. Keep in sync with vopl3ipc.h VOPL3_REV
@@ -626,10 +642,15 @@ DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params
 
         case IOCTL_VOPL3_MIDI_VM_GONE:  /* renderer: did the MIDI game's box close? */
             if (params->cbOutBuffer >= 4) {
+                DWORD nout = 4;
                 out[0] = S.midi_vm_gone;
                 S.midi_vm_gone = 0;                /* one-shot: clear on read */
+                if (params->cbOutBuffer >= 8) {    /* is the source a DOS box? */
+                    out[1] = (S.midi_vm && S.midi_vm != sys_vm_handle()) ? 1 : 0;
+                    nout = 8;
+                }
                 if (params->lpcbBytesReturned)
-                    *(DWORD *)params->lpcbBytesReturned = 4;
+                    *(DWORD *)params->lpcbBytesReturned = nout;
                 rc = 0;
             }
             break;
