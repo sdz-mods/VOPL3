@@ -10,9 +10,9 @@ ECHO     2. install the OPL3 renderer  (C:\VOPL3\VOPLSRV.EXE, autostarts;
 ECHO        you pick the standard or the CPU-friendly "fast" build)
 ECHO     3. install the control panel  (C:\VOPL3\VOPLCFG.EXE - MIDI device,
 ECHO        FM volume, status; you choose if it starts with Windows)
-ECHO     4. patch SBEMUL.SYS so it frees the ports VOPL3 takes over (digital
+ECHO     4. patch SBEMUL.SYS so it leaves the chosen ports alone (digital
 ECHO        audio stays). Original backed up.
-ECHO   First you choose what VOPL3 handles: FM, FM + MIDI, or MIDI only.
+ECHO   First you choose who handles the FM ports and the MIDI ports.
 ECHO.
 ECHO   (If VOPL3 is already installed, this will stop the running renderer
 ECHO   first. If that ever fails, run UNINSTALL.BAT + reboot, then this.)
@@ -20,28 +20,56 @@ ECHO.
 ECHO   Press Ctrl+C to abort, or
 PAUSE
 
+:askfm
 ECHO.
-ECHO   What should VOPL3 handle?
-ECHO     1 = FM only    - AdLib/OPL3 music. SBEMUL's MIDI is left as-is (plays
-ECHO                      the Microsoft GS Wavetable synth). Recommended default.
-ECHO     2 = FM + MIDI  - VOPL3 also takes over MIDI, so DOS-game General MIDI
-ECHO                      can be routed to ANY installed synth/device via the
-ECHO                      Windows MIDI Mapper (see README - needs a bit more
-ECHO                      setup, and replaces SBEMUL's MIDI).
-ECHO     3 = MIDI only  - MIDI as in 2, and FM is left to SBEMUL: games still
-ECHO                      detect an AdLib, but AdLib music is SILENT (as it is
-ECHO                      without VOPL3).
-CHOICE /C:123 Choose what VOPL3 handles
-IF ERRORLEVEL 3 GOTO modemidi
-IF ERRORLEVEL 2 GOTO modefmmidi
-SET VOPLMODE=fm
-GOTO modedone
-:modefmmidi
-SET VOPLMODE=fmmidi
-GOTO modedone
-:modemidi
-SET VOPLMODE=midionly
-:modedone
+ECHO   FM - the AdLib/OPL3 ports 388-38B:
+ECHO     1 = VOPL3      - SBEMUL is steered away from these ports, and VOPL3
+ECHO                      traps them and synthesizes the music. Recommended.
+ECHO     2 = Left free  - SBEMUL is steered away from these ports, and VOPL3
+ECHO                      does NOT trap them either: nothing claims them, so
+ECHO                      they are free for anything else that uses them.
+ECHO     3 = SBEMUL     - left as stock: games detect an AdLib, but AdLib
+ECHO                      music is silent.
+CHOICE /C:123 FM ports
+IF ERRORLEVEL 3 GOTO fmsbemul
+IF ERRORLEVEL 2 GOTO fmfree
+SET VOPLFM=vopl
+GOTO askmidi
+:fmfree
+SET VOPLFM=free
+GOTO askmidi
+:fmsbemul
+SET VOPLFM=sbemul
+
+:askmidi
+ECHO.
+ECHO   MIDI - the MPU-401 ports 330/331:
+ECHO     1 = VOPL3      - SBEMUL is steered away from these ports, and VOPL3
+ECHO                      traps them and sends DOS-game MIDI to the Windows
+ECHO                      MIDI Mapper: by default the same Microsoft GS
+ECHO                      Wavetable synth SBEMUL uses, or ANY other installed
+ECHO                      synth/device you pick in the control panel.
+ECHO                      Recommended.
+ECHO     2 = SBEMUL     - left as stock: MIDI plays on the Microsoft GS
+ECHO                      Wavetable synth.
+CHOICE /C:12 MIDI ports
+IF ERRORLEVEL 2 GOTO midisbemul
+SET VOPLMIDI=vopl
+GOTO askdone
+:midisbemul
+SET VOPLMIDI=sbemul
+:askdone
+IF NOT "%VOPLFM%%VOPLMIDI%"=="sbemulsbemul" GOTO asksok
+ECHO.
+ECHO   With both left to SBEMUL there is nothing for VOPL3 to do - please
+ECHO   choose again.
+GOTO askfm
+:asksok
+
+REM the port groups SBEMUL must leave alone (SBPATCH arguments)
+SET VOPLSB=
+IF NOT "%VOPLFM%"=="sbemul" SET VOPLSB=fm
+IF "%VOPLMIDI%"=="vopl" SET VOPLSB=%VOPLSB% midi
 
 ECHO.
 ECHO Stopping any running VOPL3 renderer / control panel ...
@@ -60,8 +88,8 @@ IF NOT EXIST C:\VOPL3\NUL MD C:\VOPL3
 IF EXIST C:\VOPL3\VOPLSRV.EXE ATTRIB -R C:\VOPL3\VOPLSRV.EXE >NUL
 IF EXIST C:\VOPL3\VOPLSRV.EXE DEL C:\VOPL3\VOPLSRV.EXE >NUL
 IF EXIST C:\VOPL3\VOPLSRV.EXE GOTO inuse
-REM MIDI only: no FM synthesis, so the choice of OPL3 emulator doesn't matter
-IF "%VOPLMODE%"=="midionly" GOTO copystd
+REM VOPL3 not playing FM: no synthesis, so the choice of OPL3 emulator doesn't matter
+IF NOT "%VOPLFM%"=="vopl" GOTO copystd
 ECHO.
 ECHO   Two renderer builds are included - identical sound output:
 ECHO     1 = Nuked OPL3       (the reference emulator)
@@ -106,34 +134,29 @@ IF ERRORLEVEL 2 GOTO nocfgrun
 REGEDIT /S VOPLCFG.REG
 :nocfgrun
 
-ECHO [4/5] Registering VOPL3 (boot VxD + renderer autostart + mode) ...
-REM INSTALL.REG sets the FM only mode; the others override it. Written
-REM BEFORE patching, so a failed patch finished by hand later (see sberr)
-REM still finds the chosen mode in place.
+ECHO [4/5] Registering VOPL3 (boot VxD + renderer autostart + choices) ...
+REM INSTALL.REG sets FM = VOPL3, MIDI = SBEMUL; the others override that.
+REM Written BEFORE patching, so a failed patch finished by hand later (see
+REM sberr) still finds the choices in place.
 REGEDIT /S INSTALL.REG
-IF "%VOPLMODE%"=="fmmidi" REGEDIT /S MIDION.REG
-IF "%VOPLMODE%"=="midionly" REGEDIT /S MIDIONLY.REG
+IF "%VOPLFM%"=="sbemul" REGEDIT /S FMSBEMUL.REG
+IF "%VOPLFM%"=="free" REGEDIT /S FMFREE.REG
+IF "%VOPLMIDI%"=="vopl" REGEDIT /S MIDION.REG
 
-ECHO [5/5] Patching SBEMUL.SYS for this mode ...
-SBPATCH.EXE C:\WINDOWS\SYSTEM32\DRIVERS\SBEMUL.SYS %VOPLMODE%
+ECHO [5/5] Patching SBEMUL.SYS to leave the chosen ports alone ...
+SBPATCH.EXE C:\WINDOWS\SYSTEM32\DRIVERS\SBEMUL.SYS %VOPLSB%
 IF ERRORLEVEL 1 GOTO sberr
 
 ECHO.
 ECHO   ===================  INSTALL COMPLETE  ===================
 ECHO   Please REBOOT now.
-ECHO   After reboot, in your DOS game set:
-IF "%VOPLMODE%"=="midionly" GOTO donemidi
-ECHO       Music     = AdLib (or OPL3)
-ECHO       Sound FX  = Sound Blaster
-ECHO   You get OPL3 music (VOPL3) AND digital effects (SBEMUL) together.
-GOTO donecommon
-:donemidi
-ECHO       Music     = General MIDI (MPU-401, port 330)
-ECHO       Sound FX  = Sound Blaster
-ECHO   You get MIDI music (VOPL3) AND digital effects (SBEMUL) together.
-:donecommon
+ECHO   After reboot, in your DOS game set Sound FX = Sound Blaster, and Music:
+IF "%VOPLFM%"=="vopl" ECHO     AdLib (or OPL3)                - played by VOPL3
+IF "%VOPLFM%"=="free" ECHO     AdLib (or OPL3)                - ports 388-38B are left free
+IF "%VOPLMIDI%"=="vopl" ECHO     General MIDI (MPU-401, 330)    - played by VOPL3
+IF "%VOPLMIDI%"=="sbemul" ECHO     General MIDI (MPU-401, 330)    - played by SBEMUL
 ECHO   The renderer C:\VOPL3\VOPLSRV.EXE starts automatically at login.
-IF "%VOPLMODE%"=="fm" GOTO end
+IF NOT "%VOPLMIDI%"=="vopl" GOTO end
 ECHO   Pick the MIDI device in the VOPL3 control panel
 ECHO   (C:\VOPL3\VOPLCFG.EXE) - or in the Multimedia control panel or
 ECHO   C:\VOPL3\VOPL3.INI (run MIDILIST.EXE to list device indices).
@@ -142,10 +165,11 @@ GOTO end
 :sberr
 ECHO.
 ECHO   NOTE: the VxD + renderer are installed, but SBEMUL.SYS could not be
-ECHO   patched (it may be in use). SoundBlaster digital audio will not work
-ECHO   in DOS games until it is patched. To finish: restart in MS-DOS mode
-ECHO   (Start - Shut Down - Restart in MS-DOS mode), change to this drive,
-ECHO   and run:   SBPATCH.EXE C:\WINDOWS\SYSTEM32\DRIVERS\SBEMUL.SYS %VOPLMODE%
+ECHO   patched (see the messages above - it may be in use). SoundBlaster
+ECHO   digital audio will not work in DOS games until it is patched. If it
+ECHO   was in use, finish from MS-DOS mode (Start - Shut Down - Restart in
+ECHO   MS-DOS mode), change to this drive, and run:
+ECHO       SBPATCH.EXE C:\WINDOWS\SYSTEM32\DRIVERS\SBEMUL.SYS %VOPLSB%
 GOTO end
 
 :inuse
@@ -157,10 +181,12 @@ GOTO end
 :copyerr
 ECHO   ERROR: could not copy files. Run this from the folder that contains
 ECHO   INSTALL.BAT, VOPL3.VXD, VOPLSRV.EXE, VOPLFAST.EXE, VOPLCFG.EXE,
-ECHO   SBPATCH.EXE, VOPLSTOP.EXE, INSTALL.REG, VOPLCFG.REG, MIDION.REG and
-ECHO   MIDIONLY.REG.
+ECHO   SBPATCH.EXE, VOPLSTOP.EXE, INSTALL.REG, VOPLCFG.REG, MIDION.REG,
+ECHO   FMSBEMUL.REG and FMFREE.REG.
 
 :end
-SET VOPLMODE=
+SET VOPLFM=
+SET VOPLMIDI=
+SET VOPLSB=
 ECHO.
 PAUSE

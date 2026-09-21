@@ -235,8 +235,9 @@ static void refresh(void)
         strcpy(line, "Renderer: not running");
     upd(g_opl_l1, g_p_opl_l1, sizeof(g_p_opl_l1), line);
 
-    if (live && s->ver >= 3 && !s->fm_on)
-        sprintf(line, "FM: off (MIDI-only install)      Priority: %s",
+    if (live && s->ver >= 3 && s->fm_mode != 1)
+        sprintf(line, "FM: off (%s)      Priority: %s",
+                s->fm_mode == 2 ? "ports 388-38B left free" : "left to SBEMUL",
                 s->realtime ? "realtime" : "normal");
     else if (live)
         sprintf(line, "FM: %s      Priority: %s",
@@ -261,7 +262,7 @@ static void refresh(void)
      * show it here too, annotated with who is holding realtime, so a MIDI-only
      * game doesn't read as "FM idle yet realtime" with no explanation. */
     if (!live)          strcpy(line, "Bridge: -");
-    else if (!s->midi_on) strcpy(line, "Bridge: off (FM-only install)");
+    else if (!s->midi_on) strcpy(line, "Bridge: off (MIDI left to SBEMUL)");
     else sprintf(line, "Bridge: enabled, synth %s      Priority: %s",
                  s->synth_open ? "open" : "closed",
                  !s->realtime ? "normal" :
@@ -289,7 +290,8 @@ static void refresh(void)
      * at realtime; a deferred update goes out on a later tick. */
     if (n == 0) strcpy(g_tip, "VOPL3: driver not loaded");
     else if (!live) strcpy(g_tip, "VOPL3: renderer stopped");
-    else if (s->ver >= 3 && !s->fm_on) strcpy(g_tip, "VOPL3: MIDI only");
+    else if (s->ver >= 3 && s->fm_mode != 1)
+        strcpy(g_tip, s->midi_on ? "VOPL3: MIDI only" : "VOPL3: FM ports left free");
     else sprintf(g_tip, "VOPL3: %s, FM %s", s->midi_on ? "FM+MIDI" : "FM",
                  s->active ? "playing" : "idle");
     if (g_tray_visible && strcmp(g_tip, g_p_tip) && !(live && s->realtime)) {

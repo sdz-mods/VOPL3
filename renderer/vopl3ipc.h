@@ -43,7 +43,7 @@
 #define VOPL3_STATUS_NAME  "VOPL3_STATUS"
 #define VOPL3_STATUS_MAGIC 0x33504F56u   /* 'VOP3' little-endian */
 #define VOPL3_STATUS_VER   3   /* 2: out_open claimed from reserved[0]
-                                * 3: fm_on claimed from reserved[0] */
+                                * 3: fm_mode claimed from reserved[0] */
 
 /* --- renderer control (window messages to the "VOPLSRV" window) ------------
  * Values are obtained at runtime via RegisterWindowMessage(name) on both
@@ -75,7 +75,8 @@ typedef struct {
                          * see [renderer] idleclose=). Claimed from the
                          * reserved words, so the struct size is unchanged
                          * and an older GUI simply reads it as 0.         */
-    DWORD fm_on;        /* FM enabled at this launch (0 = MIDI-only)     */
+    DWORD fm_mode;      /* registry Fm at this launch: 1 = VOPL3 plays FM,
+                         * 0 = FM left to SBEMUL, 2 = ports left free   */
     DWORD reserved[1];  /* future fields without breaking the ABI        */
 } VOPL3_STATUS;
 #endif

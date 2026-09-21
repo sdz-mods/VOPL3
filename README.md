@@ -37,7 +37,9 @@ I/O layer, so it also catches raw OPL-port writes from **Win16/Win32** programs 
 the System VM, not just DOS boxes (verified).
 
 So if your sound card provides its **own FM synth** you likely don't need this
-(unless when using it with a WDM driver AFAIK).
+(unless when using it with a WDM driver AFAIK). If you still want VOPL3's MIDI
+routing on such a machine, choose to leave the FM ports **free** at install (see
+**Install choices** below).
 
 ## How it works
 
@@ -48,8 +50,8 @@ flowchart TD
     G["DOS game (Win9x DOS box)"]
 
     subgraph k["ring 0 (kernel)"]
-        VXD["VOPL3.VXD<br/>traps OPL ports 0x388-0x38B in the FM modes (VMM Install_IO_Handler)<br/>+ MPU-401 ports 0x330-0x331 in the MIDI modes<br/>keeps AdLib detection alive<br/>queues writes into ring buffers"]
-        SB["SBEMUL.SYS<br/>digital audio (+ MIDI in FM-only mode,<br/>+ fake AdLib detection in MIDI-only mode)"]
+        VXD["VOPL3.VXD<br/>traps OPL ports 0x388-0x38B when VOPL3 plays FM (VMM Install_IO_Handler)<br/>+ MPU-401 ports 0x330-0x331 when VOPL3 handles MIDI<br/>keeps AdLib detection alive<br/>queues writes into ring buffers"]
+        SB["SBEMUL.SYS<br/>digital audio<br/>(+ MIDI / fake AdLib detection, if left to SBEMUL)"]
     end
 
     subgraph u["user mode"]
@@ -57,8 +59,8 @@ flowchart TD
         SYN["MIDI Mapper /<br/>any installed MIDI device"]
     end
 
-    G -- "music = AdLib / OPL3 (FM modes)<br/>OUT 0x388-0x38B" --> VXD
-    G -- "MIDI (FM + MIDI / MIDI only)<br/>OUT 0x330-0x331" --> VXD
+    G -- "music = AdLib / OPL3<br/>OUT 0x388-0x38B" --> VXD
+    G -- "music = General MIDI<br/>OUT 0x330-0x331" --> VXD
     G -- "sound FX = Sound Blaster" --> SB
     VXD -- "ring buffers<br/>(DeviceIoControl)" --> SRV
     SRV -- "OPL3 music" --> KMIX["KMIXER (software mixing)"]
@@ -71,8 +73,8 @@ flowchart TD
 ### 1. `VOPL3.VXD` — the kernel port-trap (ring 0)
 A Win9x **static VxD** loaded at boot. Only ring-0 code can trap port I/O this
 way, so this is where trapping has to happen. It uses VMM's
-`Install_IO_Handler` to hook ports **0x388–0x38B** (in the FM modes — hooked
-when the renderer asks at startup, not at boot), and on every access it:
+`Install_IO_Handler` to hook ports **0x388–0x38B** (when VOPL3 plays FM —
+hooked when the renderer asks at startup, not at boot), and on every access it:
 - records the OPL **address/data** register writes and pushes each `(register,
   data)` pair into a small **ring buffer** allocated from the VMM heap;
 - emulates just enough OPL **status / timer** behaviour to keep AdLib *detection*
@@ -106,10 +108,24 @@ Just stealing the port kills SBEMUL's digital audio (only FM synth would work),
 `SBPATCH.EXE` instead moves SBEMUL's four FM-port table entries (0x388–0x38B)
 to (hopefully) unused ports, so SBEMUL keeps its digital audio + MIDI and simply
 stops touching 0x388, leaving it for VOPL3. The result: **OPL3 music (VOPL3) and
-digital SFX/MIDI (SBEMUL) at the same time.** In the MIDI modes it moves the
-MPU-401 table (0x330/0x331) the same way; in **MIDI only** mode it leaves the FM
-table alone. Reinstalling in a different mode gives ports that mode no longer
-needs back to SBEMUL.
+digital SFX/MIDI (SBEMUL) at the same time.** It does the same for the MPU-401
+table (0x330/0x331) when VOPL3 handles MIDI, and leaves a table alone when its
+ports stay with SBEMUL. Reinstalling with different choices gives ports back to
+SBEMUL as needed.
+
+## Install choices: who handles which ports
+
+`INSTALL.BAT` asks two independent questions:
+
+| | **VOPL3** (recommended) | **Left free** | **SBEMUL** (stock) |
+|---|---|---|---|
+| **FM** — ports 0x388–0x38B | SBEMUL is steered away from these ports; VOPL3 traps them and synthesizes the music | SBEMUL is steered away from these ports, and VOPL3 doesn't trap them either — they are free for anything else that uses them | games detect an AdLib, but AdLib music is silent |
+| **MIDI** — ports 0x330/0x331 | SBEMUL is steered away from these ports; VOPL3 sends DOS-game MIDI to any device (see **MIDI** below) | — | MIDI plays on the Microsoft GS Wavetable synth |
+
+Leaving both to SBEMUL isn't offered, since VOPL3 would have nothing to do. When
+VOPL3 doesn't play FM, the renderer opens no audio stream at all. The choices are
+stored in the registry (`HKLM\Software\VOPL3`: `Fm` = 1 VOPL3, 2 left free,
+0 SBEMUL; `Midi` = 1 VOPL3, 0 SBEMUL); to change them, run `INSTALL.BAT` again.
 
 The patcher is deliberately careful: it finds each port table by byte pattern,
 required to match exactly once (so it works across Win98 builds rather than a
@@ -118,13 +134,11 @@ hardcoded offset, and refuses anything unrecognisable), backs up the original as
 input only warns — third-party SBEMUL patches (e.g. the SB16-enable patch) skip
 the checksum fixup, and coexisting with them is supported.
 
-## MIDI (optional): routable DOS-game General MIDI
+## MIDI: routable DOS-game General MIDI
 
-By default VOPL3 does **FM only** and leaves SBEMUL's MPU-401 MIDI untouched —
-DOS-game MIDI keeps playing through SBEMUL's fixed target, the **Microsoft GS
-Wavetable** software synth. If you'd rather send that MIDI somewhere else,
-choose **FM + MIDI** (or **MIDI only**, below) at install and VOPL3 takes over
-the MPU-401 too:
+Without VOPL3, DOS-game MIDI plays through SBEMUL's fixed target, the **Microsoft
+GS Wavetable** software synth. When VOPL3 handles MIDI (the recommended install
+choice), it takes over the MPU-401:
 
 - The VxD traps the **MPU-401 ports 0x330/0x331** (UART mode) and captures the
   game's raw MIDI byte stream; the renderer re-emits it with `midiOut` to the
@@ -138,15 +152,10 @@ the MPU-401 too:
   in `C:\VOPL3\VOPL3.INI` `[midi] device=` (`65535` = MIDI Mapper, the default;
   or a device index). Run **`MIDILIST.EXE`** to list the devices and their
   indices.
-- Both MIDI modes mean VOPL3 *replaces* SBEMUL's MIDI (SBPATCH frees
-  0x330/0x331). The mode is an install-time choice stored in the registry
-  (`HKLM\Software\VOPL3`, values `Fm` and `Midi`); in FM-only mode nothing
-  MIDI-related is touched. Scope is **UART mode**; MPU-401 intelligent mode is
-  not emulated.
-- **MIDI only** is for when you only want the MIDI routing: VOPL3 leaves FM to
-  SBEMUL entirely — it neither patches SBEMUL's FM ports nor traps 0x388–0x38B —
-  so games still *detect* an AdLib, but AdLib music stays silent, exactly as
-  without VOPL3. The renderer then opens no audio stream at all.
+- VOPL3 then *replaces* SBEMUL's MIDI (SBPATCH frees 0x330/0x331). The default
+  target is the MIDI Mapper — normally the same GS synth SBEMUL would use — so
+  nothing changes until you pick another device. Scope is **UART mode**;
+  MPU-401 intelligent mode is not emulated.
 
 ## Control panel (`VOPLCFG.EXE`)
 
@@ -204,15 +213,15 @@ renderer/    the user-mode renderer (hidden background app); built twice:
 gui/         VOPLCFG.EXE — the control panel / tray app (see above)
 installer/   INSTALL.BAT / UNINSTALL.BAT, SBPATCH.C (the SBEMUL patcher),
              VOPLSTOP.C (stops running VOPL3 programs on reinstall), *.REG
-             (incl. MIDION.REG / MIDIONLY.REG for the MIDI modes, VOPLCFG.REG
-             for GUI autostart),
+             (incl. MIDION.REG, FMSBEMUL.REG and FMFREE.REG for the install
+             choices, VOPLCFG.REG for GUI autostart),
              README, and build.ps1 that assembles the shippable dist/ package
 nuked-opl3/  Nuked OPL3 (bundled, LGPL 2.1)
 nuked-opl3-fast/  Nuked-OPL3-fast, tgies' bit-exact ~2x-faster fork (LGPL 2.1)
 ref/         vmdisp9x fixlink + MIT license (the VxD glue headers vmm.h/io32.h/
              code32.h are bundled into vxd/)
 tests/       DOS + host test programs (AdLib/OPL and Sound Blaster probes;
-             MIDILIST.C lists MIDI output devices for the MIDI modes)
+             MIDILIST.C lists MIDI output devices for VOPL3's MIDI)
 BUILD.md     build prerequisites and step-by-step
 ```
 
@@ -226,10 +235,10 @@ BUILD.md     build prerequisites and step-by-step
   `INSTALL.BAT` from a DOS box — it installs the VxD (boot-loaded), installs the
   renderer (autostarts hidden; you pick the Nuked or the CPU-friendly fast
   build), installs the control panel (you choose whether it starts with
-  Windows), lets you choose **FM only**, **FM + MIDI** or **MIDI only** (see
-  **MIDI** above), and patches `SBEMUL.SYS` for that mode. Reboot. In your DOS
-  game set **Music = AdLib/OPL3** (General MIDI in MIDI-only mode) and **Sound
-  FX = Sound Blaster**. `UNINSTALL.BAT`
+  Windows), asks who handles the FM and the MIDI ports (see **Install
+  choices** above), and patches `SBEMUL.SYS` accordingly. Reboot. In your DOS
+  game set **Music = AdLib/OPL3** or **General MIDI** and **Sound FX = Sound
+  Blaster**. `UNINSTALL.BAT`
   restores the original SBEMUL and removes VOPL3.
 
 ## Status

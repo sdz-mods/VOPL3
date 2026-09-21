@@ -516,11 +516,11 @@ static void do_install(void)
 
     /* No ports are trapped at boot. Both the OPL ports (388-38B) and the
      * MPU-401 ports (330/331) are trapped ON DEMAND, when the renderer asks
-     * (IOCTL_VOPL3_FM_ENABLE / IOCTL_VOPL3_MIDI_ENABLE) per the mode chosen at
-     * install - and only in modes where SBPATCH freed those ports from SBEMUL.
+     * (IOCTL_VOPL3_FM_ENABLE / IOCTL_VOPL3_MIDI_ENABLE) per the choices made
+     * at install - and only where SBPATCH steered SBEMUL away from them.
      * SBEMUL tears its whole emulation down (digital audio included) if
-     * another VxD owns a port it still wants, so e.g. in MIDI-only mode, where
-     * SBEMUL keeps 388, we must never grab it. */
+     * another VxD owns a port it still wants, so e.g. with FM left to SBEMUL,
+     * which then keeps 388, we must never grab it. */
     ser_str("\nVOPL3: Device_Init done (ports are trapped on demand)\n");
 }
 
