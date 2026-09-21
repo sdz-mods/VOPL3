@@ -101,6 +101,7 @@ struct vstate {
     DWORD nonbyte;             /* non-byte I/O ops punted to Simulate_IO */
     DWORD ring_head, ring_tail, ring_lost;
     DWORD ring_addr;           /* VMM-heap OPL ring (allocated at init) */
+    DWORD opl_vm;              /* handle of the VM that last wrote the OPL  */
     BYTE  opl_reg[512];
     /* ---- MPU-401 (MIDI) ---- */
     DWORD mpu_uart;            /* 1 = UART mode entered                   */
@@ -264,11 +265,23 @@ static void opl_timer_update(void)
                                            * (whole instrument banks per tick)
                                            * between renderer drains. */
 
+/* queue (timestamp, reg, data) for the renderer */
+static void ring_put(DWORD reg, BYTE d)
+{
+    if (S.ring_addr) {
+        ring[ring_head & (RING_SIZE - 1)] =
+              ((sys_time_ms() & 0x7FFF) << 17) | (reg << 8) | d;
+        ring_head++;
+    }
+}
+
 /* __stdcall so the naked trampolines can push args on the stack */
-void __stdcall opl_write(DWORD port, DWORD data)
+void __stdcall opl_write(DWORD port, DWORD data, DWORD vm)
 {
     BYTE d = (BYTE)data;
     writes_seen++;
+    S.opl_vm = vm;                        /* remember who's playing FM, so we
+                                           * notice when its DOS box closes    */
 
     if ((port & 1) == 0) {
         /* address/index port: 0x388 = bank 0 (OPL2/OPL3 set A),
@@ -289,13 +302,7 @@ void __stdcall opl_write(DWORD port, DWORD data)
         opl_reg[opl_bank | opl_index] = d;
     }
 
-    /* queue (timestamp, reg, data) for the renderer */
-    if (S.ring_addr) {
-        ring[ring_head & (RING_SIZE - 1)] =
-              ((sys_time_ms() & 0x7FFF) << 17)
-            | ((DWORD)(opl_bank | opl_index) << 8) | d;
-        ring_head++;
-    }
+    ring_put(opl_bank | opl_index, d);
 }
 
 DWORD __stdcall opl_read(DWORD port)
@@ -400,9 +407,10 @@ void __declspec(naked) io_trap(void)
         push ebx
         push ecx
         push edx
+        push ebx              /* arg3: VM handle (who is writing) */
         push eax              /* arg2: data */
         push edx              /* arg1: port */
-        call opl_write        /* __stdcall(port, data) */
+        call opl_write        /* __stdcall(port, data, vm) */
         pop  edx
         pop  ecx
         pop  ebx
@@ -549,15 +557,46 @@ void __stdcall Device_Exit_proc(DWORD VM)
     ser_str("\n");
 }
 
-/* Called on Destroy_VM (a DOS box closing). If it's the VM that was sending
- * MIDI, flag it so the renderer releases the synth immediately - the game is
- * gone, not just pausing. */
-void __stdcall midi_vm_destroyed(DWORD vm)
+/* Called on Destroy_VM (a DOS box closing).
+ *
+ * MIDI: if it's the VM that was sending MIDI, flag it so the renderer
+ * releases the synth immediately - the game is gone, not just pausing.
+ *
+ * FM: if it's the VM that last wrote the OPL, key off every voice it left
+ * sounding. A game that quits without silencing the chip otherwise leaves a
+ * sustaining voice (EG-TYP set) holding at its sustain level forever: the
+ * renderer never goes idle, keeps synthesizing, holds realtime under
+ * priority=auto, and never reaches idleclose=. The key-offs go through the
+ * ring like any game write, so the renderer applies them in order and each
+ * voice fades out through its own release envelope. Block/F-number are kept
+ * (only the KEY-ON bit is cleared) so the pitch doesn't jump during the
+ * release. Only voices actually keyed on get a write: a box that exits with
+ * the chip already silent queues nothing, and so doesn't wake a renderer
+ * that has released its output. */
+static void fm_vm_destroyed(DWORD vm)
+{
+    DWORD bank, r;
+    if (!S.opl_vm || vm != S.opl_vm) return;
+    S.opl_vm = 0;
+    for (bank = 0; bank <= 0x100; bank += 0x100)
+        for (r = bank | 0xB0; r <= (bank | 0xB8); r++)
+            if (opl_reg[r] & 0x20) {                /* KEY-ON */
+                opl_reg[r] &= ~0x20;
+                ring_put(r, opl_reg[r]);
+            }
+    if (opl_reg[0xBD] & 0x1F) {                     /* rhythm BD/SD/TT/CY/HH */
+        opl_reg[0xBD] &= ~0x1F;
+        ring_put(0xBD, opl_reg[0xBD]);
+    }
+}
+
+void __stdcall vm_destroyed(DWORD vm)
 {
     if (S.midi_vm && vm == S.midi_vm) {
         S.midi_vm_gone = 1;
         S.midi_vm      = 0;
     }
+    fm_vm_destroyed(vm);
 }
 
 /* ===================== Win32 DeviceIoControl bridge =====================
@@ -734,7 +773,7 @@ void __declspec(naked) VXD_control(void)
         cmp eax, Destroy_VM
         jnz c7
             push ebx                      /* EBX = terminating VM handle */
-            call midi_vm_destroyed
+            call vm_destroyed
             clc
             ret
         c7:
