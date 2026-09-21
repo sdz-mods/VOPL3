@@ -25,8 +25,8 @@
  * The VxD mirrors the DWORD literal as VOPL3_VXD_REV in vopl3.c (its build
  * takes no extra includes); keep them in sync when bumping. */
 #ifndef VOPL3_REV_DWORD         /* overridable (-d...) to tag TEST builds,  */
-#define VOPL3_REV       "A05"   /* e.g. "A4T2" - shows in the control panel */
-#define VOPL3_REV_DWORD ((DWORD)'A' | ((DWORD)'0' << 8) | ((DWORD)'5' << 16))
+#define VOPL3_REV       "A06"   /* e.g. "A4T2" - shows in the control panel */
+#define VOPL3_REV_DWORD ((DWORD)'A' | ((DWORD)'0' << 8) | ((DWORD)'6' << 16))
 #endif
 
 /* --- VxD ioctl the GUI reads directly (mirror of the VxD's private define) - */
