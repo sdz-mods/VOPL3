@@ -226,14 +226,16 @@ static void refresh(void)
     VOPL3_STATUS *s = rstat();
     int live = renderer_live(s);
     char line[160], drv[16], ren[16];
+    const char *be = "";
 
     /* --- Virtual OPL3 section --- */
+    if (live)
+        be = s->backend == 2 ? "DOSBox DBOPL" :
+             s->backend == 1 ? "Nuked-OPL3-fast" : "Nuked OPL3";
     if (live && s->ver >= 3 && s->fm_mode == 1 && s->rate)
-        sprintf(line, "Renderer: running      Backend: %s @ %u Hz",
-                s->backend ? "Nuked-OPL3-fast" : "Nuked OPL3", (unsigned)s->rate);
+        sprintf(line, "Renderer: running      Backend: %s @ %u Hz", be, (unsigned)s->rate);
     else if (live)
-        sprintf(line, "Renderer: running      Backend: %s",
-                s->backend ? "Nuked-OPL3-fast" : "Nuked OPL3");
+        sprintf(line, "Renderer: running      Backend: %s", be);
     else
         strcpy(line, "Renderer: not running");
     upd(g_opl_l1, g_p_opl_l1, sizeof(g_p_opl_l1), line);

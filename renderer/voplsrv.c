@@ -1,7 +1,8 @@
 /* voplsrv.exe - OPL3 + MIDI renderer for VOPL3.VXD (Win9x GUI-subsystem app)
  *
  * Opens \\.\VOPL3 and services two things the VxD traps for DOS programs:
- *   - OPL3 FM: polls the register-write ring, feeds Nuked OPL3, plays via
+ *   - OPL3 FM: polls the register-write ring, feeds the OPL3 emulator (one
+ *     per build: Nuked OPL3, Nuked-OPL3-fast or DOSBox's DBOPL), plays via
  *     waveOut (KMIXER mixes it with SBEMUL's digital audio - no sound-driver
  *     changes needed);
  *   - MPU-401 MIDI: drains the captured MIDI byte stream and re-emits it via
@@ -14,11 +15,17 @@
  * before the system tears the process down (avoid blue screen).
  *
  * Build (Open Watcom, Win32, runs on Win98): see build.ps1.
- * Nuked OPL3 (opl3.c) is LGPL 2.1 and shipped as a separate module.
+ * Nuked OPL3 / Nuked-OPL3-fast (opl3.c) are LGPL 2.1 and shipped as a
+ * separate module; DOSBox's DBOPL (dbopl/) is GPL v2 or later, which makes
+ * the DBOPL build (vopldb.exe) GPL as a whole.
  */
 #include <windows.h>
 #include <mmsystem.h>
+#ifdef VOPL3_DBOPL
+#include "dbopl_glue.h"
+#else
 #include "opl3.h"
+#endif
 #include "vopl3ipc.h"      /* shared status/control contract with VOPLCFG.EXE */
 
 #define RATE      48000        /* default + maximum output rate; rate=     */
@@ -48,7 +55,6 @@
 #define FILE_FLAG_DELAYED_ERROR 0x10000000
 #endif
 
-static opl3_chip chip;
 static HANDLE    hvxd;
 static HWAVEOUT  hwo;
 static WAVEHDR   hdr[NBUF_MAX];
@@ -81,10 +87,27 @@ static HANDLE        g_statmap;
 static UINT          g_msg_reload;  /* RegisterWindowMessage(VOPL3_MSG_RELOAD) */
 static UINT          g_msg_panic;   /* RegisterWindowMessage(VOPL3_MSG_PANIC)  */
 
+/* ---- the OPL3 emulator: one per build ----
+ * Everything below talks to the chip only through these three calls.
+ * Register writes get the real chip's minimum spacing (~40 us) with every
+ * backend: Nuked's OPL3_WriteRegBuffered does it (see render_buffer), and the
+ * DBOPL glue paces them the same way (see dbopl/dbopl_glue.cpp for why that
+ * matters - some music depends on the gaps). */
+#ifdef VOPL3_DBOPL
+#define BACKEND_ID 2                /* built against DOSBox's DBOPL */
+static void chip_reset(DWORD r)                  { dbopl_reset(r); }
+static void chip_write(WORD reg, BYTE val)       { dbopl_write(reg, val); }
+static void chip_generate(short *dst, DWORD n)   { dbopl_generate(dst, n); }
+#else
 #ifdef VOPL3_FAST
 #define BACKEND_ID 1                /* built against nuked-opl3-fast */
 #else
 #define BACKEND_ID 0                /* built against nuked-opl3 (reference) */
+#endif
+static opl3_chip chip;
+static void chip_reset(DWORD r)                  { OPL3_Reset(&chip, r); }
+static void chip_write(WORD reg, BYTE val)       { OPL3_WriteRegBuffered(&chip, reg, val); }
+static void chip_generate(short *dst, DWORD n)   { OPL3_GenerateStream(&chip, dst, n); }
 #endif
 
 /* ---- FM volume boost ----
@@ -127,12 +150,13 @@ static void set_rate(DWORD r)
  * below (default 48000); anything else is treated as 48000. Nuked would
  * resample to any rate, but there is no point supporting anything besides
  * the standard ones. Read ONCE, at startup - not in load_settings, which
- * also runs on every control-panel reload: a new rate needs OPL3_Reset,
+ * also runs on every control-panel reload: a new rate needs a chip reset,
  * which would wipe the chip's registers (the game's instrument setup)
- * mid-game. The OPL3 engine's CPU cost is the same at any rate: both Nuked
- * cores emulate the chip at its native 49716 Hz and always resample to this
- * rate. Worth changing e.g. on 44.1k-native hardware, where rate=44100
- * spares KMIXER a 48->44.1 conversion and the CPU time it takes. */
+ * mid-game. With the Nuked cores the OPL3 engine's CPU cost is the same at
+ * any rate: they emulate the chip at its native 49716 Hz and always resample
+ * to this rate (DBOPL instead computes directly at this rate). Worth
+ * changing e.g. on 44.1k-native hardware, where rate=44100 spares KMIXER a
+ * 48->44.1 conversion and the CPU time it takes. */
 static void load_rate(void)
 {
     static const UINT ok[] = { 11025, 16000, 22050, 32000, 44100, 48000 };
@@ -458,8 +482,7 @@ static DWORD drain_events(void)
         anch_t15 = t15; anch_smp = tgt; anch_frac = frac; last_tgt = tgt;
 
         if (pq_tail - pq_head >= PQMAX) {              /* full: apply oldest */
-            OPL3_WriteRegBuffered(&chip, pq_reg[pq_head & (PQMAX - 1)],
-                                         pq_val[pq_head & (PQMAX - 1)]);
+            chip_write(pq_reg[pq_head & (PQMAX - 1)], pq_val[pq_head & (PQMAX - 1)]);
             pq_head++;
         }
         pq_time[pq_tail & (PQMAX - 1)] = tgt;
@@ -471,7 +494,7 @@ static DWORD drain_events(void)
 }
 
 /* generate one buffer (frames), applying queued writes at their sample offsets.
- * Writes go through OPL3_WriteRegBuffered, NOT OPL3_WriteReg: buffered
+ * With Nuked, writes go through OPL3_WriteRegBuffered, NOT OPL3_WriteReg: buffered
  * writes get the chip's real minimum spacing (2 chip samples, ~40 us -
  * the ISA-bus pacing every real OPL3 ever saw). Slamming a whole burst of
  * writes onto one chip instant with OPL3_WriteReg races the envelope/phase
@@ -485,15 +508,14 @@ static void render_buffer(short *dst)
         DWORD n = frames - done;
         while (pq_head != pq_tail &&
                (long)(pq_time[pq_head & (PQMAX - 1)] - stream_pos) <= 0) {
-            OPL3_WriteRegBuffered(&chip, pq_reg[pq_head & (PQMAX - 1)],
-                                         pq_val[pq_head & (PQMAX - 1)]);
+            chip_write(pq_reg[pq_head & (PQMAX - 1)], pq_val[pq_head & (PQMAX - 1)]);
             pq_head++;
         }
         if (pq_head != pq_tail) {
             DWORD due = pq_time[pq_head & (PQMAX - 1)] - stream_pos;
             if (due < n) n = due;
         }
-        OPL3_GenerateStream(&chip, dst + done * 2, n);
+        chip_generate(dst + done * 2, n);
         done       += n;
         stream_pos += n;
     }
@@ -690,7 +712,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     load_settings();
     load_rate();
     status_init();
-    OPL3_Reset(&chip, rate);
+    chip_reset(rate);
 
     /* MPU-401 MIDI bridge - only if VOPL3 handles MIDI. Tell the VxD to start
      * trapping 0x330/0x331. The MIDI synth itself is opened lazily
@@ -721,7 +743,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
         ok = audio_open();
         if (!ok && rate != RATE) {
             set_rate(RATE);
-            OPL3_Reset(&chip, rate);
+            chip_reset(rate);
             ok = audio_open();
         }
         if (!ok) {

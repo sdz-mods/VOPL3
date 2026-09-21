@@ -7,7 +7,7 @@ ECHO   This installer will:
 ECHO     1. install VOPL3.VXD          (loads at boot, traps the AdLib/OPL
 ECHO                                    and/or MPU-401 MIDI ports)
 ECHO     2. install the OPL3 renderer  (C:\VOPL3\VOPLSRV.EXE, autostarts;
-ECHO        you pick the standard or the CPU-friendly "fast" build)
+ECHO        you pick one of three OPL3 emulator builds)
 ECHO     3. install the control panel  (C:\VOPL3\VOPLCFG.EXE - MIDI device,
 ECHO        FM volume, status; you choose if it starts with Windows)
 ECHO     4. patch SBEMUL.SYS so it leaves the chosen ports alone (digital
@@ -91,17 +91,23 @@ IF EXIST C:\VOPL3\VOPLSRV.EXE GOTO inuse
 REM VOPL3 not playing FM: no synthesis, so the choice of OPL3 emulator doesn't matter
 IF NOT "%VOPLFM%"=="vopl" GOTO copystd
 ECHO.
-ECHO   Two renderer builds are included - identical sound output:
-ECHO     1 = Nuked OPL3       (the reference emulator)
-ECHO     2 = Nuked OPL3 fast  (same output, about half the CPU use;
+ECHO   Three renderer builds are included:
+ECHO     1 = Nuked OPL3       (the reference emulator - the most accurate)
+ECHO     2 = Nuked OPL3 fast  (same output as 1, about half the CPU use;
 ECHO                           recommended, especially on slower machines)
-CHOICE /C:12 Which renderer do you want to install
+ECHO     3 = DOSBox DBOPL     (DOSBox's emulator: a small fraction of the
+ECHO                           CPU use of 1 or 2, but less accurate)
+CHOICE /C:123 Which renderer do you want to install
+IF ERRORLEVEL 3 GOTO copydb
 IF ERRORLEVEL 2 GOTO copyfast
 :copystd
 COPY VOPLSRV.EXE C:\VOPL3\VOPLSRV.EXE
 GOTO srvdone
 :copyfast
 COPY VOPLFAST.EXE C:\VOPL3\VOPLSRV.EXE
+GOTO srvdone
+:copydb
+COPY VOPLDB.EXE C:\VOPL3\VOPLSRV.EXE
 :srvdone
 IF NOT EXIST C:\VOPL3\VOPLSRV.EXE GOTO copyerr
 IF EXIST C:\VOPL3\VOPL3.INI GOTO inikeep
@@ -180,7 +186,7 @@ GOTO end
 
 :copyerr
 ECHO   ERROR: could not copy files. Run this from the folder that contains
-ECHO   INSTALL.BAT, VOPL3.VXD, VOPLSRV.EXE, VOPLFAST.EXE, VOPLCFG.EXE,
+ECHO   INSTALL.BAT, VOPL3.VXD, VOPLSRV.EXE, VOPLFAST.EXE, VOPLDB.EXE, VOPLCFG.EXE,
 ECHO   SBPATCH.EXE, VOPLSTOP.EXE, INSTALL.REG, VOPLCFG.REG, MIDION.REG,
 ECHO   FMSBEMUL.REG and FMFREE.REG.
 

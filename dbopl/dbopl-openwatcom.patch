@@ -1,0 +1,129 @@
+--- dosbox/dbopl.h
++++ vopl3/dbopl.h
+@@ -146,2 +146,8 @@
+ 	Bits TemplateVolume( );
++	//VOPL3/Open Watcom: plain wrappers for &TemplateVolume< X >
++	Bits Volume_OFF( );
++	Bits Volume_RELEASE( );
++	Bits Volume_SUSTAIN( );
++	Bits Volume_DECAY( );
++	Bits Volume_ATTACK( );
+ 
+@@ -190,2 +196,13 @@
+ 	Channel* BlockTemplate( Chip* chip, Bit32u samples, Bit32s* output );
++	//VOPL3/Open Watcom: plain wrappers for &BlockTemplate< X >
++	Channel* Block_sm2AM( Chip* chip, Bit32u samples, Bit32s* output );
++	Channel* Block_sm2FM( Chip* chip, Bit32u samples, Bit32s* output );
++	Channel* Block_sm2Percussion( Chip* chip, Bit32u samples, Bit32s* output );
++	Channel* Block_sm3AM( Chip* chip, Bit32u samples, Bit32s* output );
++	Channel* Block_sm3AMAM( Chip* chip, Bit32u samples, Bit32s* output );
++	Channel* Block_sm3AMFM( Chip* chip, Bit32u samples, Bit32s* output );
++	Channel* Block_sm3FM( Chip* chip, Bit32u samples, Bit32s* output );
++	Channel* Block_sm3FMAM( Chip* chip, Bit32u samples, Bit32s* output );
++	Channel* Block_sm3FMFM( Chip* chip, Bit32u samples, Bit32s* output );
++	Channel* Block_sm3Percussion( Chip* chip, Bit32u samples, Bit32s* output );
+ 	Channel();
+--- dosbox/dbopl.cpp
++++ vopl3/dbopl.cpp
+@@ -434,8 +434,15 @@
+ 
++//VOPL3/Open Watcom: plain wrappers for &TemplateVolume< X >
++Bits Operator::Volume_OFF( ) { return TemplateVolume< Operator::OFF >( ); }
++Bits Operator::Volume_RELEASE( ) { return TemplateVolume< Operator::RELEASE >( ); }
++Bits Operator::Volume_SUSTAIN( ) { return TemplateVolume< Operator::SUSTAIN >( ); }
++Bits Operator::Volume_DECAY( ) { return TemplateVolume< Operator::DECAY >( ); }
++Bits Operator::Volume_ATTACK( ) { return TemplateVolume< Operator::ATTACK >( ); }
++
+ static const VolumeHandler VolumeHandlerTable[5] = {
+-	&Operator::TemplateVolume< Operator::OFF >,
+-	&Operator::TemplateVolume< Operator::RELEASE >,
+-	&Operator::TemplateVolume< Operator::SUSTAIN >,
+-	&Operator::TemplateVolume< Operator::DECAY >,
+-	&Operator::TemplateVolume< Operator::ATTACK >
++	&Operator::Volume_OFF,
++	&Operator::Volume_RELEASE,
++	&Operator::Volume_SUSTAIN,
++	&Operator::Volume_DECAY,
++	&Operator::Volume_ATTACK
+ };
+@@ -638,3 +645,3 @@
+ 	fourMask = 0;
+-	synthHandler = &Channel::BlockTemplate< sm2FM >;
++	synthHandler = &Channel::Block_sm2FM;
+ };
+@@ -754,12 +761,12 @@
+ 			case 0:
+-				chan0->synthHandler = &Channel::BlockTemplate< sm3FMFM >;
++				chan0->synthHandler = &Channel::Block_sm3FMFM;
+ 				break;
+ 			case 1:
+-				chan0->synthHandler = &Channel::BlockTemplate< sm3AMFM >;
++				chan0->synthHandler = &Channel::Block_sm3AMFM;
+ 				break;
+ 			case 2:
+-				chan0->synthHandler = &Channel::BlockTemplate< sm3FMAM >;
++				chan0->synthHandler = &Channel::Block_sm3FMAM;
+ 				break;
+ 			case 3:
+-				chan0->synthHandler = &Channel::BlockTemplate< sm3AMAM >;
++				chan0->synthHandler = &Channel::Block_sm3AMAM;
+ 				break;
+@@ -771,5 +778,5 @@
+ 		} else if (regC0 & 1 ) {
+-			synthHandler = &Channel::BlockTemplate< sm3AM >;
++			synthHandler = &Channel::Block_sm3AM;
+ 		} else {
+-			synthHandler = &Channel::BlockTemplate< sm3FM >;
++			synthHandler = &Channel::Block_sm3FM;
+ 		}
+@@ -784,5 +791,5 @@
+ 		} else if (regC0 & 1 ) {
+-			synthHandler = &Channel::BlockTemplate< sm2AM >;
++			synthHandler = &Channel::Block_sm2AM;
+ 		} else {
+-			synthHandler = &Channel::BlockTemplate< sm2FM >;
++			synthHandler = &Channel::Block_sm2FM;
+ 		}
+@@ -971,2 +978,34 @@
+ 
++//VOPL3/Open Watcom: plain wrappers for &BlockTemplate< X >
++Channel* Channel::Block_sm2AM( Chip* chip, Bit32u samples, Bit32s* output ) {
++	return BlockTemplate< sm2AM >( chip, samples, output );
++}
++Channel* Channel::Block_sm2FM( Chip* chip, Bit32u samples, Bit32s* output ) {
++	return BlockTemplate< sm2FM >( chip, samples, output );
++}
++Channel* Channel::Block_sm2Percussion( Chip* chip, Bit32u samples, Bit32s* output ) {
++	return BlockTemplate< sm2Percussion >( chip, samples, output );
++}
++Channel* Channel::Block_sm3AM( Chip* chip, Bit32u samples, Bit32s* output ) {
++	return BlockTemplate< sm3AM >( chip, samples, output );
++}
++Channel* Channel::Block_sm3AMAM( Chip* chip, Bit32u samples, Bit32s* output ) {
++	return BlockTemplate< sm3AMAM >( chip, samples, output );
++}
++Channel* Channel::Block_sm3AMFM( Chip* chip, Bit32u samples, Bit32s* output ) {
++	return BlockTemplate< sm3AMFM >( chip, samples, output );
++}
++Channel* Channel::Block_sm3FM( Chip* chip, Bit32u samples, Bit32s* output ) {
++	return BlockTemplate< sm3FM >( chip, samples, output );
++}
++Channel* Channel::Block_sm3FMAM( Chip* chip, Bit32u samples, Bit32s* output ) {
++	return BlockTemplate< sm3FMAM >( chip, samples, output );
++}
++Channel* Channel::Block_sm3FMFM( Chip* chip, Bit32u samples, Bit32s* output ) {
++	return BlockTemplate< sm3FMFM >( chip, samples, output );
++}
++Channel* Channel::Block_sm3Percussion( Chip* chip, Bit32u samples, Bit32s* output ) {
++	return BlockTemplate< sm3Percussion >( chip, samples, output );
++}
++
+ /*
+@@ -1034,5 +1073,5 @@
+ 			if ( opl3Active ) {
+-				chan[6].synthHandler = &Channel::BlockTemplate< sm3Percussion >; 
++				chan[6].synthHandler = &Channel::Block_sm3Percussion; 
+ 			} else {
+-				chan[6].synthHandler = &Channel::BlockTemplate< sm2Percussion >; 
++				chan[6].synthHandler = &Channel::Block_sm2Percussion; 
+ 			}

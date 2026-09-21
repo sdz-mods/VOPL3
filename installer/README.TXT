@@ -1,7 +1,8 @@
 VOPL3 - OPL3 FM emulation for Windows 98/ME
 ===========================================
 
-For Windows 98/ME. Adds OPL3 FM synthesis (Nuked OPL3) to DOS boxes,
+For Windows 98/ME. Adds OPL3 FM synthesis (Nuked OPL3 or DOSBox's DBOPL) to
+DOS boxes,
 coexisting with Microsoft's SBEMUL - the standard Win98 DOS Sound Blaster
 emulation, which gives digital audio + MIDI but NO FM. The OPL3 audio plays
 through the normal Windows audio output (waveOut), so its output is not tied
@@ -19,10 +20,12 @@ INSTALL
   that contains these files. It:
     - installs VOPL3.VXD (C:\WINDOWS\SYSTEM, loads at boot),
     - installs the renderer (C:\VOPL3\VOPLSRV.EXE, autostarts at login).
-      If VOPL3 plays FM, you choose between two builds with identical sound
-      output:
-        1 = Nuked OPL3 (reference), 2 = Nuked OPL3 fast (about half the
-        CPU use - recommended, especially on slower machines),
+      If VOPL3 plays FM, you choose between three builds:
+        1 = Nuked OPL3 (reference, the most accurate),
+        2 = Nuked OPL3 fast (same output as 1, about half the CPU use -
+            recommended, especially on slower machines),
+        3 = DOSBox DBOPL (DOSBox's emulator: a small fraction of the CPU
+            use of 1 or 2, but less accurate),
     - installs the control panel (C:\VOPL3\VOPLCFG.EXE; you choose whether
       it starts with Windows, minimized to the system tray),
     - asks who handles the FM ports and the MIDI ports (see CHOICES below),
@@ -81,10 +84,11 @@ TUNING (advanced - C:\VOPL3\VOPL3.INI, see the comments in the file)
                   your sound driver; costs some FM latency. Applied at
                   renderer start.
   rate=<hz>       output sample rate: 11025, 16000, 22050, 32000, 44100
-                  or 48000 (default; any other value counts as 48000). The
-                  OPL3 engine always runs at the chip's native 49716 Hz and
-                  is resampled to this rate, so its CPU use is the same at
-                  any rate. 44100 can spare Windows a sample-rate conversion
+                  or 48000 (default; any other value counts as 48000). With
+                  the Nuked builds the OPL3 engine always runs at the chip's
+                  native 49716 Hz and is resampled to this rate, so its CPU
+                  use is the same at any rate (DBOPL computes directly at
+                  this rate). 44100 can spare Windows a sample-rate conversion
                   on 44.1 kHz-native hardware. Applied at renderer start;
                   falls back to 48000 if the driver refuses it.
   priority=...    auto (default) = realtime only while producing audio;
@@ -144,8 +148,12 @@ FILES
   VOPL3.VXD                     OPL3 (+ optional MPU-401 MIDI) port-trap VxD
   VOPLSRV.EXE                   renderer, Nuked OPL3 backend (LGPL 2.1)
   VOPLFAST.EXE                  renderer, Nuked-OPL3-fast backend (LGPL 2.1)
+  VOPLDB.EXE                    renderer, DOSBox DBOPL backend (GPL v2 or
+                                later - see DBOPL-LICENSE.txt; its source is
+                                with VOPL3's, at the project's GitHub page)
                                 (the one you pick is installed as VOPLSRV.EXE)
   VOPLCFG.EXE                   control panel / tray app (see above)
   VOPLSTOP.EXE                  stops the running renderer/control panel
                                 (used by INSTALL.BAT on reinstall)
   VOPL3.INI                     renderer settings (FM volume, MIDI device)
+  DBOPL-LICENSE.txt             the GNU GPL v2, which covers VOPLDB.EXE

@@ -24,12 +24,18 @@ try {
     Move-Item VOPLSTOP.EXE (Join-Path $dist 'VOPLSTOP.EXE') -Force
     Remove-Item VOPLSTOP.OBJ -ErrorAction SilentlyContinue
 
-    # 2. stage the driver + both renderer builds + the control panel + licenses
-    #    under their install names (INSTALL.BAT lets the user pick a renderer;
-    #    the chosen one is installed as C:\VOPL3\VOPLSRV.EXE)
+    # 2. stage the driver + the three renderer builds + the control panel +
+    #    licenses under their install names (INSTALL.BAT lets the user pick a
+    #    renderer; the chosen one is installed as C:\VOPL3\VOPLSRV.EXE)
     Copy-Item (Join-Path $root 'vxd\vopl3.vxd')         (Join-Path $dist 'VOPL3.VXD')    -Force
     Copy-Item (Join-Path $root 'renderer\voplsrv.exe')  (Join-Path $dist 'VOPLSRV.EXE')  -Force
     Copy-Item (Join-Path $root 'renderer\voplfast.exe') (Join-Path $dist 'VOPLFAST.EXE') -Force
+    Copy-Item (Join-Path $root 'renderer\vopldb.exe')   (Join-Path $dist 'VOPLDB.EXE')   -Force
+    # VOPLDB.EXE is GPL as a whole (DBOPL is): its license text must travel
+    # with it, so unlike the ones below this copy is not allowed to fail.
+    # DOSBox's COPYING is LF-only - normalise to CRLF so Win98 Notepad reads it.
+    $gpl = [IO.File]::ReadAllText((Join-Path $root 'dbopl\COPYING'))
+    [IO.File]::WriteAllText((Join-Path $dist 'DBOPL-LICENSE.txt'), (($gpl -replace "`r`n","`n") -replace "`n","`r`n"))
     Copy-Item (Join-Path $root 'gui\voplcfg.exe')       (Join-Path $dist 'VOPLCFG.EXE')  -Force
     Copy-Item (Join-Path $root 'nuked-opl3\LICENSE')    (Join-Path $dist 'NUKED-OPL3-LICENSE.txt') -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $root 'nuked-opl3-fast\LICENSE') (Join-Path $dist 'NUKED-OPL3-FAST-LICENSE.txt') -Force -ErrorAction SilentlyContinue
