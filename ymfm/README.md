@@ -48,8 +48,12 @@ synthesis code, only how it is spelled:
   `ymfm::ymf262` at its native rate (clock 14.31818 MHz / 288) and linearly
   interpolating to the output rate. Outputs A+C go left and B+D right, as
   Nuked mixes them, halved to Nuked's level so the FM volume setting means the
-  same with every backend. Register writes are **paced** at least 2 chip
-  samples (~40 µs) apart, as in the DBOPL glue (see
+  same with every backend. ymfm's own `generate` clamps its mix to 16 bits at
+  its level, twice Nuked's, which after halving would clip at half the
+  loudness Nuked and DBOPL clip at; so the glue takes the mix before that
+  clamp (a small `ymf262` subclass), halves it, and only then clamps - the
+  same headroom as the other backends. Register writes are **paced** at least
+  2 chip samples (~40 µs) apart, as in the DBOPL glue (see
   [../dbopl/README.md](../dbopl/README.md)): ymfm also applies every write the
   moment it gets it, and without the gaps some music loses notes (on the
   capture that showed the DBOPL buzz, unpaced ymfm came out at under half of

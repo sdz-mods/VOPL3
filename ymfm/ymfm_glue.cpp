@@ -6,6 +6,13 @@
  * halved to Nuked's level so the FM volume setting means the same with
  * every backend.
  *
+ * ymfm's own ymf262::generate clamps its mix to 16 bits at ymfm's level,
+ * which is twice Nuked's: halved afterwards, that would clip at half the
+ * loudness Nuked and DBOPL clip at (most of all with the FM volume below
+ * 200%, where the boost doesn't clip there first).
+ * So the mix is taken before that clamp (see vopl3_ymf262), halved, and
+ * only then clamped to 16 bits - the same headroom as the other backends.
+ *
  * Register writes are PACED, at least 2 chip samples (~40 us) apart, with
  * audio generated in between - the spacing Nuked's OPL3_WriteRegBuffered
  * gives the other renderers and a real OPL3 sees on the ISA bus. ymfm
@@ -20,8 +27,20 @@
 #define SPACING    2                /* chip samples between two writes */
 #define QSIZE      8192             /* pending writes (power of two) */
 
+/* ymf262 with a generate that skips the final clamp16: the mix stays 32-bit */
+class vopl3_ymf262 : public ymfm::ymf262
+{
+public:
+    vopl3_ymf262(ymfm::ymfm_interface &intf) : ymfm::ymf262(intf) { }
+    void generate_unclamped(output_data *output)
+    {
+        m_fm.clock(fm_engine::ALL_CHANNELS);
+        m_fm.output(output->clear(), 0, 32767, fm_engine::ALL_CHANNELS);
+    }
+};
+
 static ymfm::ymfm_interface g_intf;
-static ymfm::ymf262 *g_chip;
+static vopl3_ymf262 *g_chip;
 static unsigned long g_step;        /* native samples per output sample, 16.16 */
 static unsigned long g_pos;         /* position between g_prev and g_cur, 16.16 */
 static int g_prev[2], g_cur[2];
@@ -39,7 +58,15 @@ static void apply(unsigned reg, unsigned char val)
     g_chip->write(bank * 2 + 1, val);
 }
 
-/* one chip sample, applying each queued write when its time comes */
+static int clamp16(int v)
+{
+    if (v > 32767)  return 32767;
+    if (v < -32768) return -32768;
+    return v;
+}
+
+/* one chip sample, applying each queued write when its time comes; the
+ * result is at Nuked's level and within 16 bits */
 static void chip_sample(int *lr)
 {
     ymfm::ymf262::output_data out;
@@ -47,22 +74,15 @@ static void chip_sample(int *lr)
         apply(g_q[g_qh & (QSIZE - 1)].reg, g_q[g_qh & (QSIZE - 1)].val);
         g_qh++;
     }
-    g_chip->generate(&out, 1);
+    g_chip->generate_unclamped(&out);
     g_now++;
-    lr[0] = (out.data[0] + out.data[2]) / 2;
-    lr[1] = (out.data[1] + out.data[3]) / 2;
-}
-
-static short clamp16(int v)
-{
-    if (v > 32767)  return 32767;
-    if (v < -32768) return -32768;
-    return (short)v;
+    lr[0] = clamp16((out.data[0] + out.data[2]) / 2);
+    lr[1] = clamp16((out.data[1] + out.data[3]) / 2);
 }
 
 extern "C" void ymfm_reset(unsigned rate)
 {
-    if (!g_chip) g_chip = new ymfm::ymf262(g_intf);
+    if (!g_chip) g_chip = new vopl3_ymf262(g_intf);
     g_chip->reset();
     g_step = (unsigned long)((double)g_chip->sample_rate(OPL3_CLOCK) * 65536.0 / rate + 0.5);
     g_now = g_last = 0;
@@ -91,9 +111,12 @@ extern "C" void ymfm_generate(short *out, unsigned frames)
 {
     unsigned i;
     for (i = 0; i < frames; i++) {
-        long f = (long)(g_pos & 0xFFFF);
-        out[2 * i]     = clamp16(g_prev[0] + (int)(((long)(g_cur[0] - g_prev[0]) * f) >> 16));
-        out[2 * i + 1] = clamp16(g_prev[1] + (int)(((long)(g_cur[1] - g_prev[1]) * f) >> 16));
+        /* both ends are within 16 bits, so the point between them is too;
+         * a 15-bit fraction keeps the product within a 32-bit long even for
+         * a full-scale step (65535 * 32767 < 2^31) */
+        long f = (long)((g_pos & 0xFFFF) >> 1);
+        out[2 * i]     = (short)(g_prev[0] + (int)(((long)(g_cur[0] - g_prev[0]) * f) >> 15));
+        out[2 * i + 1] = (short)(g_prev[1] + (int)(((long)(g_cur[1] - g_prev[1]) * f) >> 15));
         g_pos += g_step;
         while (g_pos >= 0x10000) {
             g_pos -= 0x10000;
