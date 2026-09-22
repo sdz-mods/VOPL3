@@ -2,3 +2,6 @@ REGEDIT4
 
 [HKEY_LOCAL_MACHINE\Software\VOPL3]
 "Fm"=dword:00000000
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Multimedia\WDMAudio\SBEmulator]
+"SoftFM"=-

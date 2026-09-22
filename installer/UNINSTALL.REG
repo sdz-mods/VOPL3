@@ -7,3 +7,6 @@ REGEDIT4
 [HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Run]
 "VOPL3Renderer"=-
 "VOPL3 Control Panel"=-
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Multimedia\WDMAudio\SBEmulator]
+"SoftFM"=-

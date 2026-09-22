@@ -10,8 +10,9 @@ ECHO     2. install the OPL3 renderer  (C:\VOPL3\VOPLSRV.EXE, autostarts;
 ECHO        you pick one of three OPL3 emulator builds)
 ECHO     3. install the control panel  (C:\VOPL3\VOPLCFG.EXE - MIDI device,
 ECHO        FM volume, status; you choose if it starts with Windows)
-ECHO     4. patch SBEMUL.SYS so it leaves the chosen ports alone (digital
-ECHO        audio stays). Original backed up.
+ECHO     4. set up SBEMUL so it leaves the chosen ports alone (digital
+ECHO        audio stays): FM through SBEMUL's own SoftFM registry setting,
+ECHO        MIDI by patching SBEMUL.SYS. Original backed up.
 ECHO   First you choose who handles the FM ports and the MIDI ports.
 ECHO.
 ECHO   (If VOPL3 is already installed, this will stop the running renderer
@@ -66,7 +67,10 @@ ECHO   choose again.
 GOTO askfm
 :asksok
 
-REM the port groups SBEMUL must leave alone (SBPATCH arguments)
+REM the port groups SBEMUL must leave alone (SBPATCH arguments). SBPATCH
+REM still gets "fm": on SBEMUL builds other than 4.10.2222/2223, where
+REM SoftFM may not be read, it moves the FM table as a fallback; on
+REM 4.10.2222/2223 it gives back an FM table an earlier install moved.
 SET VOPLSB=
 IF NOT "%VOPLFM%"=="sbemul" SET VOPLSB=fm
 IF "%VOPLMIDI%"=="vopl" SET VOPLSB=%VOPLSB% midi
@@ -141,7 +145,9 @@ REGEDIT /S VOPLCFG.REG
 :nocfgrun
 
 ECHO [4/5] Registering VOPL3 (boot VxD + renderer autostart + choices) ...
-REM INSTALL.REG sets FM = VOPL3, MIDI = SBEMUL; the others override that.
+REM INSTALL.REG sets FM = VOPL3, MIDI = SBEMUL, and SBEMUL's SoftFM=1 (it
+REM leaves all its FM ports alone, 388-38B and base+8/+9); the others
+REM override that. FMSBEMUL.REG removes SoftFM again (stock SBEMUL FM).
 REM Written BEFORE patching, so a failed patch finished by hand later (see
 REM sberr) still finds the choices in place.
 REGEDIT /S INSTALL.REG
@@ -149,7 +155,7 @@ IF "%VOPLFM%"=="sbemul" REGEDIT /S FMSBEMUL.REG
 IF "%VOPLFM%"=="free" REGEDIT /S FMFREE.REG
 IF "%VOPLMIDI%"=="vopl" REGEDIT /S MIDION.REG
 
-ECHO [5/5] Patching SBEMUL.SYS to leave the chosen ports alone ...
+ECHO [5/5] Setting up SBEMUL.SYS to leave the chosen ports alone ...
 SBPATCH.EXE C:\WINDOWS\SYSTEM32\DRIVERS\SBEMUL.SYS %VOPLSB%
 IF ERRORLEVEL 1 GOTO sberr
 

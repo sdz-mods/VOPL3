@@ -104,17 +104,35 @@ below) or in `C:\VOPL3\VOPL3.INI` (`volume=<percent>`, default **200**, max
 to SBEMUL's digital SFX. The boost is applied after synthesis, so the emulator
 cores stay bit-exact.
 
-### 3. `SBPATCH.EXE` — the SBEMUL coexistence patch
-SBEMUL grabs 0x388 *only* to fake AdLib detection — it produces no FM sound —
-and, it **tears down its entire emulation if another driver claims 0x388**.
-Just stealing the port kills SBEMUL's digital audio (only FM synth would work),
-`SBPATCH.EXE` instead moves SBEMUL's four FM-port table entries (0x388–0x38B)
-to (hopefully) unused ports, so SBEMUL keeps its digital audio + MIDI and simply
-stops touching 0x388, leaving it for VOPL3. The result: **OPL3 music (VOPL3) and
-digital SFX/MIDI (SBEMUL) at the same time.** It does the same for the MPU-401
-table (0x330/0x331) when VOPL3 handles MIDI, and leaves a table alone when its
-ports stay with SBEMUL. Reinstalling with different choices gives ports back to
-SBEMUL as needed.
+### 3. SBEMUL coexistence: `SoftFM` and `SBPATCH.EXE`
+SBEMUL grabs its FM ports *only* to fake AdLib detection — it produces no FM
+sound. These are the AdLib ports 0x388–0x38B and the Sound Blaster's own FM
+ports at base+8/+9, where *base* is the Sound Blaster's I/O address (the `A`
+value in `BLASTER`, normally 0x220, so 0x228/0x229). And it **tears down its
+entire emulation if another driver claims 0x388** (or its MIDI ports). Just
+stealing the ports would kill SBEMUL's digital audio, so the installer steers
+SBEMUL away from them instead:
+
+- **FM:** SBEMUL's own registry value `SoftFM`
+  (`HKLM\Software\Microsoft\Multimedia\WDMAudio\SBEmulator`). With
+  `SoftFM=1`, SBEMUL leaves the AdLib ports 0x388–0x38B **and** the Sound
+  Blaster's FM ports at base+8/+9 (0x228/0x229) alone, and keeps its digital
+  audio. Freeing base+8/+9 matters for games that look for the FM chip there
+  first and only fall back to 0x388 if nothing answers (e.g. the DiamondWare
+  Sound ToolKit). `INSTALL.BAT` sets it when FM is VOPL3 or left free, and
+  removes it when FM stays with SBEMUL.
+- **MIDI:** `SBPATCH.EXE` moves SBEMUL's MPU-401 port-table entries
+  (0x330/0x331) to unused ports inside the user's own `SBEMUL.SYS`, so SBEMUL
+  keeps its digital audio and stops touching them, leaving them for VOPL3.
+- `SoftFM` is known to work on SBEMUL 4.10.2222 (98SE) and 4.10.2223 (the
+  Q269601 hotfix). On any other build `SBPATCH.EXE` also moves the FM
+  port-table entries (0x388–0x38B), as a fallback in case that build doesn't
+  read `SoftFM`.
+
+The result: **OPL3 music or routable MIDI (VOPL3) and digital SFX (SBEMUL) at
+the same time.** Reinstalling with different choices gives ports back to
+SBEMUL as needed (including FM tables moved by earlier VOPL3 versions, where
+`SoftFM` now does the job).
 
 ## Install choices: who handles which ports
 
@@ -130,7 +148,7 @@ VOPL3 doesn't play FM, the renderer opens no audio stream at all. The choices ar
 stored in the registry (`HKLM\Software\VOPL3`: `Fm` = 1 VOPL3, 2 left free,
 0 SBEMUL; `Midi` = 1 VOPL3, 0 SBEMUL); to change them, run `INSTALL.BAT` again.
 
-The patcher is deliberately careful: it finds each port table by byte pattern,
+`SBPATCH.EXE` is deliberately careful: it finds each port table by byte pattern,
 required to match exactly once (so it works across Win98 builds rather than a
 hardcoded offset, and refuses anything unrecognisable), backs up the original as
 `SBEMUL.SYS.orig`, and writes back a correct PE checksum. A stale checksum on the
@@ -249,7 +267,8 @@ BUILD.md     build prerequisites and step-by-step
   renderer (autostarts hidden; you pick one of the three builds), installs the
   control panel (you choose whether it starts with
   Windows), asks who handles the FM and the MIDI ports (see **Install
-  choices** above), and patches `SBEMUL.SYS` accordingly. Reboot. In your DOS
+  choices** above), and sets up SBEMUL accordingly (`SoftFM`, `SBEMUL.SYS`
+  patch). Reboot. In your DOS
   game set **Music = AdLib/OPL3** or **General MIDI** and **Sound FX = Sound
   Blaster**. `UNINSTALL.BAT`
   restores the original SBEMUL and removes VOPL3.

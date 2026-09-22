@@ -88,7 +88,8 @@ steps above.
 
 Copy `installer/dist/` to the target and run `INSTALL.BAT` from a DOS box. It
 installs the VxD (boot-loaded), installs the renderer (autostarts, hidden), and
-patches `SBEMUL.SYS` to leave the chosen ports alone. Reboot. In your DOS game
+sets up SBEMUL to leave the chosen ports alone (its `SoftFM` registry value for
+FM, a patch to `SBEMUL.SYS` for MIDI). Reboot. In your DOS game
 set **Music = AdLib/OPL3** or **General MIDI** and **Sound FX = Sound Blaster**.
 `UNINSTALL.BAT` reverts
 everything (restores the original `SBEMUL.SYS`, removes VOPL3). See

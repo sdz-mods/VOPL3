@@ -2,7 +2,17 @@
  * alone, while keeping its digital audio:
  *   fm   - the AdLib/OPL FM ports 388-38B (for VOPL3's FM, or left free)
  *   midi - the MPU-401 MIDI ports 330/331 (for VOPL3's MIDI)
+ *   none - neither: both groups stay (or go back to being) SBEMUL's
  * A group not named stays SBEMUL's (stock behaviour).
+ *
+ * FM normally needs no patch: SBEMUL's own registry value SoftFM=1 (under
+ * HKLM\Software\Microsoft\Multimedia\WDMAudio\SBEmulator, set by
+ * INSTALL.BAT) makes it leave the AdLib ports 388-38B and the Sound
+ * Blaster's FM ports at base+8/+9 alone. On the builds known to read it
+ * (4.10.2222 = 98SE, 4.10.2223 = the Q269601 hotfix) the FM table is
+ * therefore kept original, and given back if an earlier VOPL3 install had
+ * moved it. On any other build, "fm" still moves the table, as a fallback
+ * in case SoftFM is not read there.
  *
  *   1. verifies it's a PE file; a stale PE checksum only WARNS (third-party
  *      patches - e.g. the SB16-enable patch - skip the fixup, and Win9x
@@ -18,7 +28,7 @@
  *      previously stale one).
  *
  * Build (Open Watcom, Win32 console - runs on Win98): see build.ps1
- * Usage: SBPATCH.EXE [path-to-SBEMUL.SYS] [fm] [midi]   (at least one group)
+ * Usage: SBPATCH.EXE [path-to-SBEMUL.SYS] [fm] [midi] | [none]
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,8 +48,9 @@ static const BYTE MI_NEW[8]  = {0xA4,2,0,0, 0xA5,2,0,0};
  * (0xFEEF04BD) in the version resource. FileVersion is two DWORDs after the
  * signature: MS = (major<<16)|minor, LS = (build<<16)|revision; SBEMUL uses
  * major.minor.revision (the low word of LS) - 2222 = stock 98SE, 2223 = the
- * Q269601 QFE hotfix. Robust: scans by signature, no hardcoded offset. */
-static void print_version(BYTE *d, long len)
+ * Q269601 QFE hotfix. Robust: scans by signature, no hardcoded offset.
+ * Returns 1 for a build known to honour SoftFM (4.10.2222 / 4.10.2223). */
+static int print_version(BYTE *d, long len)
 {
     long i;
     for (i = 0; i + 16 <= len; i += 4) {
@@ -48,10 +59,11 @@ static void print_version(BYTE *d, long len)
             unsigned major = (unsigned)d[i+10] | ((unsigned)d[i+11]<<8);
             unsigned rev   = (unsigned)d[i+12] | ((unsigned)d[i+13]<<8);
             printf("  file version: %u.%u.%u\n", major, minor, rev);
-            return;
+            return major == 4 && minor == 10 && (rev == 2222 || rev == 2223);
         }
     }
     printf("  file version: (version resource not found)\n");
+    return 0;
 }
 
 /* standard PE image checksum (checksum field treated as 0), + file length */
@@ -85,31 +97,36 @@ int main(int argc, char **argv)
     const char *path = NULL;
     FILE *f; BYTE *d; long len, pe, co, fm_at, fm_back, mi_at, mi_back;
     int   i, fm_off_n, fm_new_n, mi_off_n, mi_new_n;
-    int   want_fm_moved = 0, want_mi_moved = 0, fm_act = 0, mi_act = 0;  /* +1 move, -1 restore */
+    int   want_fm = 0, want_mi_moved = 0, none = 0, softfm_build;
+    int   want_fm_moved, fm_act = 0, mi_act = 0;  /* +1 move, -1 restore */
     DWORD stored, calc;
     char bak[300];
 
-    /* args: [path-to-SBEMUL.SYS] [fm] [midi] - the port groups SBEMUL must
-     * leave alone; at least one is required, so a bare invocation can never
-     * quietly give everything back to SBEMUL */
+    /* args: [path-to-SBEMUL.SYS] [fm] [midi] | [none] - the port groups
+     * SBEMUL must leave alone; one is required ("none" to give everything
+     * back), so a bare invocation can never quietly do that */
     for (i = 1; i < argc; i++) {
-        if      (strcmp(argv[i], "fm") == 0)   want_fm_moved = 1;
+        if      (strcmp(argv[i], "fm") == 0)   want_fm = 1;
         else if (strcmp(argv[i], "midi") == 0) want_mi_moved = 1;
+        else if (strcmp(argv[i], "none") == 0) none = 1;
         else if (!path) path = argv[i];
     }
-    if (!want_fm_moved && !want_mi_moved) {
+    if (none == (want_fm || want_mi_moved)) {
         printf("VOPL3 SBEMUL patcher\n"
-               "Usage: SBPATCH.EXE [path-to-SBEMUL.SYS] [fm] [midi]\n"
-               "  fm   - SBEMUL leaves the AdLib/OPL FM ports 388-38B alone\n"
+               "Usage: SBPATCH.EXE [path-to-SBEMUL.SYS] [fm] [midi] | [none]\n"
+               "  fm   - SBEMUL leaves the AdLib/OPL FM ports 388-38B alone (on\n"
+               "         4.10.2222/2223 through the registry value SoftFM=1 that\n"
+               "         INSTALL.BAT sets, so the file is not changed for FM)\n"
                "  midi - SBEMUL leaves the MPU-401 MIDI ports 330/331 alone\n"
-               "  At least one is required; a group not named is given back to SBEMUL.\n");
+               "  none - both groups stay, or go back to being, SBEMUL's\n"
+               "  A group not named is given back to SBEMUL.\n");
         return 1;
     }
     if (!path) path = "C:\\WINDOWS\\SYSTEM32\\DRIVERS\\SBEMUL.SYS";
 
     printf("VOPL3 SBEMUL patcher\n  target: %s\n  SBEMUL leaves alone: %s\n", path,
-           want_fm_moved && want_mi_moved ? "FM 388-38B + MIDI 330/331" :
-           want_fm_moved ? "FM 388-38B" : "MIDI 330/331");
+           want_fm && want_mi_moved ? "FM 388-38B + MIDI 330/331" :
+           want_fm ? "FM 388-38B" : want_mi_moved ? "MIDI 330/331" : "nothing");
 
     f = fopen(path, "rb");
     if (!f) { printf("ERROR: cannot open file.\n"); return 1; }
@@ -124,7 +141,14 @@ int main(int argc, char **argv)
     if (pe < 0 || pe + 0x60 > len || d[pe] != 'P' || d[pe+1] != 'E') { printf("ERROR: no PE header.\n"); return 2; }
     co = pe + 24 + 64;
 
-    print_version(d, len);
+    /* FM on a build known to read SoftFM: the registry value does it, and
+     * the table stays original. Elsewhere the table move is the fallback. */
+    softfm_build  = print_version(d, len);
+    want_fm_moved = want_fm && !softfm_build;
+    if (want_fm)
+        printf("  FM 388-38B: %s\n", softfm_build
+               ? "left alone through SoftFM=1 (registry) - FM table kept original"
+               : "build not known to read SoftFM - moving the FM table as a fallback");
 
     stored = (DWORD)d[co] | ((DWORD)d[co+1]<<8) | ((DWORD)d[co+2]<<16) | ((DWORD)d[co+3]<<24);
     calc   = pe_checksum(d, len, co);
@@ -142,7 +166,8 @@ int main(int argc, char **argv)
     mi_at   = find_once(d, len, MI_OFF, 8,  &mi_off_n);
     mi_back = find_once(d, len, MI_NEW, 8,  &mi_new_n);
 
-    /* FM ports 388-38B: moved to 2A0-2A3 if asked, else left to SBEMUL.
+    /* FM ports 388-38B: moved to 2A0-2A3 when the fallback applies (see
+     * above), else the table stays original.
      * A group that was asked for but can't be found is an error for both
      * tables: carrying on would leave SBEMUL holding a port the installer
      * has told VOPL3 to take, and SBEMUL tears its whole emulation down
@@ -174,8 +199,8 @@ int main(int argc, char **argv)
     }
 
     if (!fm_act && !mi_act) {
-        printf("Already patched like this (FM %s, MIDI %s). Nothing to do.\n",
-               fm_new_n ? "moved" : "SBEMUL's", mi_new_n ? "moved" : "SBEMUL's");
+        printf("Already set like this (FM table %s, MIDI table %s). Nothing to do.\n",
+               fm_new_n ? "moved" : "original", mi_new_n ? "moved" : "original");
         free(d); return 0;
     }
 

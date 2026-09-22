@@ -29,14 +29,16 @@ INSTALL
     - installs the control panel (C:\VOPL3\VOPLCFG.EXE; you choose whether
       it starts with Windows, minimized to the system tray),
     - asks who handles the FM ports and the MIDI ports (see CHOICES below),
-    - patches SBEMUL.SYS so it leaves the chosen ports alone (keeps its
-      digital sound).
+    - sets up SBEMUL so it leaves the chosen ports alone (keeps its
+      digital sound): FM through SBEMUL's own SoftFM registry setting, MIDI
+      by patching SBEMUL.SYS (see ABOUT THE SBEMUL PATCH).
   Then REBOOT.
 
   If it says SBEMUL.SYS is "in use", finish that one step from MS-DOS mode
   (Start > Shut Down > Restart in MS-DOS mode), change to this folder and run:
       SBPATCH.EXE C:\WINDOWS\SYSTEM32\DRIVERS\SBEMUL.SYS <groups>
-  where <groups> is what the installer printed: fm, midi, or fm midi.
+  where <groups> is what the installer printed: fm, midi, or fm midi
+  (SBPATCH.EXE ... none gives back everything SBPATCH had moved).
 
 USE
   After reboot the renderer starts automatically. In your DOS game set
@@ -119,17 +121,30 @@ UNINSTALL
   Run UNINSTALL.BAT (restores the original SBEMUL.SYS, removes VOPL3), reboot.
 
 ABOUT THE SBEMUL PATCH
-  SBEMUL claims the AdLib FM port 388 only to fake AdLib *detection* - it makes
-  no FM sound - and it tears down its entire emulation when another driver
-  takes 388 (or the MIDI ports). SBPATCH.EXE changes the port entries you
-  chose to steer SBEMUL away from - the four FM ports, the two MPU-401 MIDI
-  ports, or both - inside your own SBEMUL.SYS to (hopefully) unused ports and
-  fixes the PE checksum, so SBEMUL keeps its digital sound and leaves those
-  ports alone. It:
+  SBEMUL claims its FM ports only to fake AdLib *detection* - it makes no FM
+  sound. These are the AdLib ports 388-38B and the Sound Blaster's own FM
+  ports at base+8/+9, where "base" is the Sound Blaster's I/O address (the A
+  value in BLASTER, normally 220, so 228/229). And it tears down its entire
+  emulation when another driver takes 388 (or the MIDI ports).
+  FM: SBEMUL has its own registry setting for this, SoftFM (in
+  HKLM\Software\Microsoft\Multimedia\WDMAudio\SBEmulator). With SoftFM=1
+  it leaves the AdLib ports 388-38B and the Sound Blaster's FM ports at
+  base+8/+9 (228/229 at base 220) alone, and keeps its digital sound.
+  INSTALL.BAT sets it when FM = VOPL3 or left free, and removes it when
+  FM = SBEMUL. Freeing base+8/+9 as well matters: some games (e.g. those
+  using the DiamondWare Sound ToolKit) look for the FM chip there first and
+  only fall back to 388 if nothing answers.
+  MIDI: SBPATCH.EXE changes the MPU-401 port entries (330/331) inside your
+  own SBEMUL.SYS to unused ports and fixes the PE checksum, so SBEMUL keeps
+  its digital sound and leaves the MIDI ports alone. SoftFM is known to work
+  on SBEMUL 4.10.2222 (98SE) and 4.10.2223 (the Q269601 hotfix); on any
+  other SBEMUL build SBPATCH also moves the FM port entries (388-38B), as a
+  fallback in case that build doesn't read SoftFM. SBPATCH:
     - locates each port table by byte pattern, required to match exactly
       once (works across W98 builds, refuses unrecognised files),
     - gives ports back to SBEMUL when you reinstall with different choices
-      (e.g. MIDI = VOPL3 reinstalled as MIDI = SBEMUL),
+      (e.g. MIDI = VOPL3 reinstalled as MIDI = SBEMUL), and gives back the
+      FM ports an earlier VOPL3 version had moved where SoftFM now does it,
     - tolerates files modified by other patches (e.g. the SB16-enable
       patch): a stale PE checksum only warns, and the patched file gets a
       correct checksum written back,
@@ -138,9 +153,9 @@ ABOUT THE SBEMUL PATCH
 
 FILES
   INSTALL.BAT / UNINSTALL.BAT   installer / uninstaller
-  INSTALL.REG / UNINSTALL.REG   registry entries
+  INSTALL.REG / UNINSTALL.REG   registry entries (incl. SBEMUL's SoftFM)
   MIDION.REG                    MIDI = VOPL3      (applied if chosen)
-  FMSBEMUL.REG                  FM = SBEMUL       (applied if chosen)
+  FMSBEMUL.REG                  FM = SBEMUL, SoftFM removed (applied if chosen)
   FMFREE.REG                    FM = left free    (applied if chosen)
   VOPLCFG.REG                   control-panel autostart (applied if chosen)
   SBPATCH.EXE                   the SBEMUL.SYS patcher
