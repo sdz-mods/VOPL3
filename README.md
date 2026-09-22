@@ -101,6 +101,17 @@ only for the voices that are sounding), and `VOPLYM.EXE` uses **ymfm**, the
 OPL3 emulator from MAME, at about the CPU cost of Nuked-OPL3-fast.
 Whichever is chosen gets installed as `C:\VOPL3\VOPLSRV.EXE`.
 
+**Slower CPUs and games timed on the VGA retrace.** Some DOS games time their
+frames by polling the VGA for the vertical retrace, and some of those also
+step their music once per frame. The renderer runs at realtime priority, and
+whenever it holds the CPU at the moment of that short pulse, the game misses
+it and waits a whole extra frame: the game slows down (and its music with it,
+where the music is stepped per frame), by roughly the share of CPU time the
+renderer takes. On a fast CPU that share is too small to notice; on a slow
+one, choose the DBOPL build for such games — it takes several times less CPU
+than the others. Games that time themselves off the timer interrupt (e.g.
+Doom, Duke Nukem 3D) are not affected.
+
 FM volume is adjustable from the **control panel** (applies live — see
 below) or in `C:\VOPL3\VOPL3.INI` (`volume=<percent>`, default **200**, max
 400). 100 is the OPL3 chip's authentic digital level — which sounds quiet next

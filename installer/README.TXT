@@ -47,6 +47,12 @@ USE
   depending on what you chose. You then get the music AND digital sound
   effects (via SBEMUL) at the same time.
 
+  Slow CPU and a game slows down (graphics and music together)? Some games
+  time their frames on the VGA's vertical retrace and miss frames while the
+  renderer is busy. Install renderer 3 (DOSBox DBOPL): it takes several
+  times less CPU than the others. Games that time themselves off the timer
+  (e.g. Doom, Duke Nukem 3D) aren't affected.
+
 CHOICES (asked by INSTALL.BAT)
   FM - the AdLib/OPL3 ports 388-38B and the Sound Blaster FM ports 2x8/2x9
   (base+8/+9, see ABOUT THE SBEMUL PATCH):
