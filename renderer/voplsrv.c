@@ -2,7 +2,7 @@
  *
  * Opens \\.\VOPL3 and services two things the VxD traps for DOS programs:
  *   - OPL3 FM: polls the register-write ring, feeds the OPL3 emulator (one
- *     per build: Nuked OPL3, Nuked-OPL3-fast or DOSBox's DBOPL), plays via
+ *     per build: Nuked OPL3, Nuked-OPL3-fast, DOSBox's DBOPL or ymfm), plays via
  *     waveOut (KMIXER mixes it with SBEMUL's digital audio - no sound-driver
  *     changes needed);
  *   - MPU-401 MIDI: drains the captured MIDI byte stream and re-emits it via
@@ -17,12 +17,14 @@
  * Build (Open Watcom, Win32, runs on Win98): see build.ps1.
  * Nuked OPL3 / Nuked-OPL3-fast (opl3.c) are LGPL 2.1 and shipped as a
  * separate module; DOSBox's DBOPL (dbopl/) is GPL v2 or later, which makes
- * the DBOPL build (vopldb.exe) GPL as a whole.
+ * the DBOPL build (vopldb.exe) GPL as a whole; ymfm (ymfm/) is BSD 3-clause.
  */
 #include <windows.h>
 #include <mmsystem.h>
-#ifdef VOPL3_DBOPL
+#if defined(VOPL3_DBOPL)
 #include "dbopl_glue.h"
+#elif defined(VOPL3_YMFM)
+#include "ymfm_glue.h"
 #else
 #include "opl3.h"
 #endif
@@ -91,15 +93,15 @@ static UINT          g_msg_panic;   /* RegisterWindowMessage(VOPL3_MSG_PANIC)  *
  * Everything below talks to the chip only through these three calls.
  * Register writes get the real chip's minimum spacing (~40 us) with every
  * backend: Nuked's OPL3_WriteRegBuffered does it (see render_buffer), and the
- * DBOPL glue paces them the same way (see dbopl/dbopl_glue.cpp for why that
- * matters - some music depends on the gaps). */
+ * DBOPL and ymfm glues pace them the same way (see dbopl/dbopl_glue.cpp for
+ * why that matters - some music depends on the gaps). */
 #ifdef VOPL3_CAPTURE                /* test builds only - see cap_put */
 static void cap_put(DWORD rec);
 #define CAP(rec) cap_put(rec)
 #else
 #define CAP(rec) ((void)0)
 #endif
-#ifdef VOPL3_DBOPL
+#if defined(VOPL3_DBOPL)
 #define BACKEND_ID 2                /* built against DOSBox's DBOPL */
 static void chip_reset(DWORD r)
     { CAP(0x40000000UL | r); dbopl_reset(r); }
@@ -107,6 +109,14 @@ static void chip_write(WORD reg, BYTE val)
     { CAP(((DWORD)reg << 8) | val); dbopl_write(reg, val); }
 static void chip_generate(short *dst, DWORD n)
     { CAP(0x80000000UL | n); dbopl_generate(dst, n); }
+#elif defined(VOPL3_YMFM)
+#define BACKEND_ID 3                /* built against ymfm */
+static void chip_reset(DWORD r)
+    { CAP(0x40000000UL | r); ymfm_reset(r); }
+static void chip_write(WORD reg, BYTE val)
+    { CAP(((DWORD)reg << 8) | val); ymfm_write(reg, val); }
+static void chip_generate(short *dst, DWORD n)
+    { CAP(0x80000000UL | n); ymfm_generate(dst, n); }
 #else
 #ifdef VOPL3_FAST
 #define BACKEND_ID 1                /* built against nuked-opl3-fast */
@@ -214,9 +224,9 @@ static void set_rate(DWORD r)
  * the standard ones. Read ONCE, at startup - not in load_settings, which
  * also runs on every control-panel reload: a new rate needs a chip reset,
  * which would wipe the chip's registers (the game's instrument setup)
- * mid-game. With the Nuked cores the OPL3 engine's CPU cost is the same at
- * any rate: they emulate the chip at its native 49716 Hz and always resample
- * to this rate (DBOPL instead computes directly at this rate). Worth
+ * mid-game. With the Nuked cores and ymfm the OPL3 engine's CPU cost is the
+ * same at any rate: they emulate the chip at its native 49716 Hz and always
+ * resample to this rate (DBOPL instead computes directly at this rate). Worth
  * changing e.g. on 44.1k-native hardware, where rate=44100 spares KMIXER a
  * 48->44.1 conversion and the CPU time it takes. */
 static void load_rate(void)

@@ -37,6 +37,7 @@ Run these from the repo root, in order:
 .\renderer\build.ps1     # -> renderer\voplsrv.exe  (~35 KB, Nuked OPL3)
                          #    renderer\voplfast.exe (~52 KB, Nuked-OPL3-fast)
                          #    renderer\vopldb.exe   (~84 KB, DOSBox DBOPL)
+                         #    renderer\voplym.exe   (~84 KB, ymfm)
 .\gui\build.ps1          # -> gui\voplcfg.exe       (~35 KB, the control panel)
 .\installer\build.ps1    # -> installer\dist\       (the shippable package)
 ```
@@ -49,12 +50,15 @@ Run these from the repo root, in order:
   `fixlink.exe` is built on first run from `ref/vmdisp9x/fixlink/fixlink.c`.
   - Add **`-Serial`** to compile in COM1 debug tracing (`-DVOPL3_SERIAL`); it is
     off by default and costs nothing when off.
-- **`renderer\build.ps1`** compiles `voplsrv.c` three times — with Nuked OPL3
+- **`renderer\build.ps1`** compiles `voplsrv.c` four times — with Nuked OPL3
   (`nuked-opl3/opl3.c` → `voplsrv.exe`), with Nuked-OPL3-fast
   (`nuked-opl3-fast/opl3.c` → `voplfast.exe`; bit-exact output, ~2x less CPU),
   and with DOSBox's DBOPL (`dbopl/dbopl.cpp` + `dbopl/dbopl_glue.cpp` →
   `vopldb.exe`; C++, built by `wcl386` via `wpp386`; far less CPU, less
-  accurate, GPL v2+ as a whole) — and links `winmm` + `advapi32` (the latter
+  accurate, GPL v2+ as a whole), and with ymfm (`ymfm/ymfm_opl.cpp` +
+  `ymfm/ymfm_glue.cpp` → `voplym.exe`; C++, compiled by `wpp386` with `-xs`
+  first, since Watcom's `<vector>` needs exception support) — and links
+  `winmm` + `advapi32` (the latter
   for the registry read that gates the optional MIDI bridge). All build as
   **GUI-subsystem** apps (`-l=nt_win`,
   `WinMain`) so they run hidden with no console window. All are compiled with
@@ -67,8 +71,9 @@ Run these from the repo root, in order:
   (`resource.rc` → `voplcfg.ico`) with `wrc` after linking.
 - **`installer\build.ps1`** builds `SBPATCH.EXE` and `VOPLSTOP.EXE` from their
   `.C` sources and `MIDILIST.EXE` from `tests/MIDILIST.C`, then assembles
-  `installer/dist/` — the VxD, the three renderer builds (+ `DBOPL-LICENSE.txt`,
-  the GPL text that must travel with `VOPLDB.EXE`), `VOPLCFG.EXE`,
+  `installer/dist/` — the VxD, the four renderer builds (+ `DBOPL-LICENSE.txt`,
+  the GPL text that must travel with `VOPLDB.EXE`, and `YMFM-LICENSE.txt`,
+  ymfm's notice for `VOPLYM.EXE`), `VOPLCFG.EXE`,
   `SBPATCH.EXE`, `VOPLSTOP.EXE`, `MIDILIST.EXE`, and the CRLF-normalized
   `INSTALL/UNINSTALL` `.BAT` + `.REG` (incl. `MIDION.REG`, `FMSBEMUL.REG`,
   `FMFREE.REG`, `VOPLCFG.REG`) +
@@ -79,7 +84,7 @@ Run these from the repo root, in order:
   `C:\VOPL3\VOPLSRV.EXE`.
 
 Build outputs (`vxd/vopl3.vxd`, `renderer/voplsrv.exe`, `renderer/voplfast.exe`,
-`renderer/vopldb.exe`,
+`renderer/vopldb.exe`, `renderer/voplym.exe`,
 `installer/dist/`) are not committed — the build is deterministic (apart from
 the renderer `.exe`s' embedded PE build-timestamp), so build them with the
 steps above.
@@ -121,5 +126,6 @@ syntax, so `build-adlibtst.ps1` needs **NASM** (<https://www.nasm.us/>): put
 | Nuked OPL3 (`opl3.c/.h`) | `nuked-opl3/` | LGPL 2.1 (`nuked-opl3/LICENSE`) |
 | Nuked-OPL3-fast (`opl3.c/.h`, `wf_rom.h`) | `nuked-opl3-fast/` | LGPL 2.1 (`nuked-opl3-fast/LICENSE`) |
 | DBOPL (`dbopl.cpp/.h`, DOSBox SVN r4494, + Open Watcom patch) | `dbopl/` | GPL v2 or later (`dbopl/COPYING`) |
+| ymfm (OPL3 parts, commit 81aec25, + Open Watcom patch) | `ymfm/` | BSD 3-clause (`ymfm/LICENSE`) |
 | `fixlink` + VxD glue headers (`vmm.h`, `io32.h`, `code32.h`) | `ref/vmdisp9x/fixlink/`, `vxd/` | MIT (`ref/vmdisp9x/LICENSE`) |
 | Open Watcom 2.0 | `tools/ow` (not committed) | Sybase Open Watcom Public License |

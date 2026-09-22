@@ -63,7 +63,7 @@ typedef struct {
     DWORD ver;          /* VOPL3_STATUS_VER (this struct's layout)       */
     DWORD rev;          /* renderer revision = VOPL3_VER_PACK            */
     DWORD backend;      /* 0 = Nuked OPL3, 1 = Nuked-OPL3-fast,
-                         * 2 = DOSBox DBOPL                               */
+                         * 2 = DOSBox DBOPL, 3 = ymfm                     */
     DWORD midi_on;      /* MIDI bridge enabled at this launch            */
     DWORD synth_open;   /* midiOut currently open                        */
     DWORD midi_dev;     /* current device id (0xFFFF = MIDI Mapper)      */

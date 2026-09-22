@@ -3,7 +3,7 @@
 *A software AdLib / OPL3 sound chip for Windows 98/ME machines that don't have one.*
 A ring-0 port-trap **VxD** captures the OPL register writes a program makes (a DOS
 game, typically) and hands them to a user-mode renderer built around **Nuked
-OPL3** (or, as a lighter option, DOSBox's DBOPL), which synthesizes the music and plays it through the normal Windows audio
+OPL3** (or, as alternatives, DOSBox's DBOPL or ymfm), which synthesizes the music and plays it through the normal Windows audio
 output — all while **coexisting** with Microsoft's SBEMUL so DOS games keep their
 digital sound effects (and MIDI). It can *optionally* also take over DOS-game
 **MPU-401 MIDI** and route it to any synth you choose (see **MIDI** below).
@@ -56,7 +56,7 @@ flowchart TD
     end
 
     subgraph u["user mode"]
-        SRV["VOPLSRV.EXE (runs hidden)<br/>drains the rings<br/>FM: Nuked OPL3 / DBOPL -> PCM @ 48 kHz -> waveOut<br/>MIDI: parser -> midiOut"]
+        SRV["VOPLSRV.EXE (runs hidden)<br/>drains the rings<br/>FM: Nuked OPL3 / DBOPL / ymfm -> PCM @ 48 kHz -> waveOut<br/>MIDI: parser -> midiOut"]
         SYN["MIDI Mapper /<br/>any installed MIDI device"]
     end
 
@@ -91,14 +91,15 @@ Windows **`waveOut` (WAVE_MAPPER)** path, where **KMIXER** software-mixes it wit
 SBEMUL's digital audio — so **no changes to the sound driver are needed** and the
 *output* is not tied to any particular card (see **Scope** for the input side).
 
-The renderer ships in **three builds**, chosen at install time: `VOPLSRV.EXE`
+The renderer ships in **four builds**, chosen at install time: `VOPLSRV.EXE`
 uses the reference **Nuked OPL3**, `VOPLFAST.EXE` uses **Nuked-OPL3-fast** (a
 bit-exact fork) at roughly **half the CPU cost** — useful on machines with
 slower CPUs, where cycle-accurate synthesis is a real load — and `VOPLDB.EXE`
 uses **DOSBox's DBOPL**, which needs only a small fraction of the CPU of either
 Nuked build but is less accurate (it computes directly at the output rate, and
-only for the voices that are sounding). Whichever is chosen gets installed as
-`C:\VOPL3\VOPLSRV.EXE`.
+only for the voices that are sounding), and `VOPLYM.EXE` uses **ymfm**, the
+OPL3 emulator from MAME, which falls between the two Nuked builds in CPU cost.
+Whichever is chosen gets installed as `C:\VOPL3\VOPLSRV.EXE`.
 
 FM volume is adjustable from the **control panel** (applies live — see
 below) or in `C:\VOPL3\VOPL3.INI` (`volume=<percent>`, default **200**, max
@@ -208,6 +209,7 @@ tray; X exits. `INSTALL.BAT` asks whether it should start with Windows
 | **Nuked OPL3** (`opl3.c`) | Nuke.YKT | LGPL 2.1 | The actual OPL3 emulator inside the renderer |
 | **Nuked-OPL3-fast** | tgies (fork of Nuked OPL3) | LGPL 2.1 | Alternate renderer backend — bit-exact output at ~half the CPU cost |
 | **DBOPL** (`dbopl.cpp`) | The DOSBox Team (DOSBox SVN r4494) | GPL v2 or later | Third renderer backend — far less CPU, less accurate |
+| **ymfm** (`ymfm_opl.cpp`) | Aaron Giles (MAME's FM cores) | BSD 3-clause | Fourth renderer backend — CPU cost between the two Nuked builds |
 | **vmdisp9x** VxD glue (`vmm.h`, `io32.h`, `code32.h`) + `fixlink` | JHRobotics | MIT | Building a loadable Win9x VxD with Open Watcom |
 | **SBEMUL.SYS** | Microsoft (stock Win98) | — | Patched in place for coexistence; **not** redistributed |
 | **Open Watcom** | — | — | Compiler/linker that still targets Win9x (16/32-bit) |
@@ -231,6 +233,9 @@ their own licenses:
   programs and its own source files are unaffected and stay MIT. See
   [dbopl/README.md](dbopl/README.md) for the exact origin and the small Open
   Watcom patch applied to it.
+- **ymfm** (`ymfm/`) is **BSD 3-clause**; its license text ships alongside
+  `VOPLYM.EXE` as `YMFM-LICENSE.txt`. See [ymfm/README.md](ymfm/README.md) for
+  the exact origin and the Open Watcom patch applied to it.
 - **vmdisp9x** glue + `fixlink` (`ref/vmdisp9x/`, and the bundled `vxd/` headers)
   are **MIT**.
 - **Microsoft's `SBEMUL.SYS` is not included or redistributed** — `SBPATCH.EXE`
@@ -240,9 +245,9 @@ their own licenses:
 
 ```
 vxd/         VOPL3.VXD — ring-0 port-trap driver (+ build.ps1, patches wlink output)
-renderer/    the user-mode renderer (hidden background app); built three times:
-             VOPLSRV.EXE (Nuked OPL3), VOPLFAST.EXE (Nuked-OPL3-fast) and
-             VOPLDB.EXE (DOSBox DBOPL);
+renderer/    the user-mode renderer (hidden background app); built four times:
+             VOPLSRV.EXE (Nuked OPL3), VOPLFAST.EXE (Nuked-OPL3-fast),
+             VOPLDB.EXE (DOSBox DBOPL) and VOPLYM.EXE (ymfm);
              vopl3ipc.h is the status/control contract shared with the GUI
 gui/         VOPLCFG.EXE — the control panel / tray app (see above)
 installer/   INSTALL.BAT / UNINSTALL.BAT, SBPATCH.C (the SBEMUL patcher),
@@ -253,6 +258,7 @@ installer/   INSTALL.BAT / UNINSTALL.BAT, SBPATCH.C (the SBEMUL patcher),
 nuked-opl3/  Nuked OPL3 (bundled, LGPL 2.1)
 nuked-opl3-fast/  Nuked-OPL3-fast, tgies' bit-exact ~2x-faster fork (LGPL 2.1)
 dbopl/       DOSBox's DBOPL (GPL v2+) + its Open Watcom patch and C glue
+ymfm/        ymfm's OPL3 (BSD 3-clause) + its Open Watcom patch and C glue
 ref/         vmdisp9x fixlink + MIT license (the VxD glue headers vmm.h/io32.h/
              code32.h are bundled into vxd/)
 tests/       DOS + host test programs (AdLib/OPL and Sound Blaster probes;
@@ -268,7 +274,7 @@ BUILD.md     build prerequisites and step-by-step
   Prerequisites (Open Watcom 2.0) and step-by-step are in **[BUILD.md](BUILD.md)**.
 - **Install on the Win98/ME machine:** copy the `dist/` folder over and run
   `INSTALL.BAT` from a DOS box — it installs the VxD (boot-loaded), installs the
-  renderer (autostarts hidden; you pick one of the three builds), installs the
+  renderer (autostarts hidden; you pick one of the four builds), installs the
   control panel (you choose whether it starts with
   Windows), asks who handles the FM and the MIDI ports (see **Install
   choices** above), and sets up SBEMUL accordingly (`SoftFM`, `SBEMUL.SYS`

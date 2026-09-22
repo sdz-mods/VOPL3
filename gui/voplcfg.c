@@ -230,7 +230,8 @@ static void refresh(void)
 
     /* --- Virtual OPL3 section --- */
     if (live)
-        be = s->backend == 2 ? "DOSBox DBOPL" :
+        be = s->backend == 3 ? "ymfm" :
+             s->backend == 2 ? "DOSBox DBOPL" :
              s->backend == 1 ? "Nuked-OPL3-fast" : "Nuked OPL3";
     if (live && s->ver >= 3 && s->fm_mode == 1 && s->rate)
         sprintf(line, "Renderer: running      Backend: %s @ %u Hz", be, (unsigned)s->rate);
