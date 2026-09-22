@@ -101,7 +101,7 @@ ECHO     2 = Nuked OPL3 fast  (same output as 1, about half the CPU use;
 ECHO                           recommended, especially on slower machines)
 ECHO     3 = DOSBox DBOPL     (DOSBox's emulator: a small fraction of the
 ECHO                           CPU use of 1 or 2, but less accurate)
-ECHO     4 = ymfm             (MAME's emulator: CPU use between 2 and 1)
+ECHO     4 = ymfm             (MAME's emulator: about the CPU use of 2)
 CHOICE /C:1234 Which renderer do you want to install
 IF ERRORLEVEL 4 GOTO copyym
 IF ERRORLEVEL 3 GOTO copydb

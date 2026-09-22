@@ -1,8 +1,10 @@
 # Building VOPL3
 
 The four components are built with **Open Watcom 2.0** on a Windows host, driven
-by the PowerShell `build.ps1` scripts. The build is self-contained: no network
-access is needed and the only external dependency is the Open Watcom toolchain.
+by the PowerShell `build.ps1` scripts; the renderer's emulator cores are
+compiled by **GCC** (32-bit MinGW) and linked in by Watcom. The build is
+self-contained: no network access is needed, and the only external dependencies
+are the two toolchains.
 
 ## 1. Prerequisites
 
@@ -11,6 +13,14 @@ access is needed and the only external dependency is the Open Watcom toolchain.
   <https://github.com/open-watcom/open-watcom-v2/releases>
   Open Watcom is the compiler/linker/assembler used throughout — it is one of the
   few modern toolchains that still targets 16/32-bit Windows and Win9x VxDs.
+- **A 32-bit (i686) MinGW GCC**, for the renderer's emulator cores only — e.g.
+  MSYS2 (<https://www.msys2.org>) with `pacman -S mingw-w64-i686-gcc`, which
+  installs to `C:\msys64\mingw32\bin` (where the build looks first; or set
+  `VOPL3_GCC` to its `bin` folder). Its optimiser makes the cores about twice
+  as fast as Watcom's, with identical output. Only the cores' object files
+  come from GCC: Watcom links them into the renderer, and none of GCC's
+  runtime is used (it targets newer Windows than 98). Without GCC,
+  `.\renderer\build.ps1 -WatcomCores` builds the cores with Watcom instead.
 
 ### Placing the toolchain
 
@@ -50,14 +60,19 @@ Run these from the repo root, in order:
   `fixlink.exe` is built on first run from `ref/vmdisp9x/fixlink/fixlink.c`.
   - Add **`-Serial`** to compile in COM1 debug tracing (`-DVOPL3_SERIAL`); it is
     off by default and costs nothing when off.
-- **`renderer\build.ps1`** compiles `voplsrv.c` four times — with Nuked OPL3
+- **`renderer\build.ps1`** builds the renderer four times — with Nuked OPL3
   (`nuked-opl3/opl3.c` → `voplsrv.exe`), with Nuked-OPL3-fast
   (`nuked-opl3-fast/opl3.c` → `voplfast.exe`; bit-exact output, ~2x less CPU),
   and with DOSBox's DBOPL (`dbopl/dbopl.cpp` + `dbopl/dbopl_glue.cpp` →
-  `vopldb.exe`; C++, built by `wcl386` via `wpp386`; far less CPU, less
-  accurate, GPL v2+ as a whole), and with ymfm (`ymfm/ymfm_opl.cpp` +
-  `ymfm/ymfm_glue.cpp` → `voplym.exe`; C++, compiled by `wpp386` with `-xs`
-  first, since Watcom's `<vector>` needs exception support) — and links
+  `vopldb.exe`; C++; far less CPU, less accurate, GPL v2+ as a whole), and
+  with ymfm (`ymfm/ymfm_glue.cpp`, which includes `ymfm/ymfm_opl.cpp` →
+  `voplym.exe`; C++). The core files are compiled by GCC with
+  `-O2 -march=i586` (no instruction newer than the Pentium: `-march=i686`
+  would add CMOV, which Pentium MMX and AMD K6 lack; C++ without exceptions
+  or RTTI); `voplsrv.c` is compiled by Watcom with `-dVOPL3_GCC`, which
+  declares the core's entry points with GCC's calling convention, and
+  `renderer/gccshim.c` gives the cores the few runtime functions they call
+  (`memset`, `new`, …) under GCC's names. `wcl386` links it all, with
   `winmm` + `advapi32` (the latter
   for the registry read that gates the optional MIDI bridge). All build as
   **GUI-subsystem** apps (`-l=nt_win`,

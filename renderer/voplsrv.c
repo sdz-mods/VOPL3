@@ -14,7 +14,8 @@
  * created purely so Windows can talk to it: WM_ENDSESSION stops the audio
  * before the system tears the process down (avoid blue screen).
  *
- * Build (Open Watcom, Win32, runs on Win98): see build.ps1.
+ * Build (Open Watcom, Win32, runs on Win98; the emulator core compiled by
+ * GCC and linked in): see build.ps1.
  * Nuked OPL3 / Nuked-OPL3-fast (opl3.c) are LGPL 2.1 and shipped as a
  * separate module; DOSBox's DBOPL (dbopl/) is GPL v2 or later, which makes
  * the DBOPL build (vopldb.exe) GPL as a whole; ymfm (ymfm/) is BSD 3-clause.
@@ -27,6 +28,24 @@
 #include "ymfm_glue.h"
 #else
 #include "opl3.h"
+#endif
+/* VOPL3_GCC: the emulator core was compiled by GCC (see build.ps1), which
+ * calls with the C (cdecl) convention - tell Watcom to call the core's entry
+ * points that way instead of with its own register convention. */
+#ifdef VOPL3_GCC
+#if defined(VOPL3_DBOPL)
+#pragma aux (__cdecl) dbopl_reset
+#pragma aux (__cdecl) dbopl_write
+#pragma aux (__cdecl) dbopl_generate
+#elif defined(VOPL3_YMFM)
+#pragma aux (__cdecl) ymfm_reset
+#pragma aux (__cdecl) ymfm_write
+#pragma aux (__cdecl) ymfm_generate
+#else
+#pragma aux (__cdecl) OPL3_Reset
+#pragma aux (__cdecl) OPL3_WriteRegBuffered
+#pragma aux (__cdecl) OPL3_GenerateStream
+#endif
 #endif
 #include "vopl3ipc.h"      /* shared status/control contract with VOPLCFG.EXE */
 

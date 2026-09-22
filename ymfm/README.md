@@ -2,8 +2,8 @@
 
 The fourth renderer backend (`VOPLYM.EXE`). ymfm is Aaron Giles' collection of
 Yamaha FM cores used by MAME; VOPL3 builds only its OPL3 (YMF262). Like Nuked
-OPL3, it runs the chip at its native 49716 Hz and resamples; built with Open
-Watcom, its CPU cost falls between Nuked-OPL3-fast and Nuked OPL3.
+OPL3, it runs the chip at its native 49716 Hz and resamples; its CPU cost is
+about that of Nuked-OPL3-fast (lower with few voices playing).
 
 ## Origin
 
@@ -44,7 +44,9 @@ synthesis code, only how it is spelled:
 ## VOPL3's files here
 
 - `ymfm_owcompat.h` — the compatibility header described above.
-- `ymfm_glue.cpp` / `ymfm_glue.h` — a C interface for the renderer, driving
+- `ymfm_glue.cpp` / `ymfm_glue.h` — a C interface for the renderer, built as
+  one unit with ymfm (it includes `ymfm_opl.cpp`, so a compiler that inlines
+  ymfm's OPL3 engine templates still leaves the glue a copy to call), driving
   `ymfm::ymf262` at its native rate (clock 14.31818 MHz / 288) and linearly
   interpolating to the output rate. Outputs A+C go left and B+D right, as
   Nuked mixes them, halved to Nuked's level so the FM volume setting means the
@@ -57,4 +59,6 @@ synthesis code, only how it is spelled:
   [../dbopl/README.md](../dbopl/README.md)): ymfm also applies every write the
   moment it gets it, and without the gaps some music loses notes (on the
   capture that showed the DBOPL buzz, unpaced ymfm came out at under half of
-  Nuked's level; paced, within 2% of it).
+  Nuked's level; paced, within 2% of it). No static objects with
+  constructors: the renderer's startup code is Watcom's, which doesn't run a
+  GCC-built file's static constructors.

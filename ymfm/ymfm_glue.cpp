@@ -19,8 +19,16 @@
  * applies every write the moment it gets it, so without this every write
  * the renderer places on the same sample would land at one instant; some
  * music depends on the gaps (see dbopl/dbopl_glue.cpp for the example that
- * showed it). */
-#include "ymfm_opl.h"
+ * showed it).
+ *
+ * Built as one unit with ymfm itself: this file includes ymfm_opl.cpp (and
+ * the build compiles only this file). The glue calls ymfm's OPL3 engine
+ * templates directly (see vopl3_ymf262), and a compiler that inlines them
+ * inside ymfm_opl.cpp - GCC does - would otherwise leave no copy to call.
+ * No static objects with constructors: when the renderer is built by Watcom
+ * with this file built by GCC, Watcom's startup code doesn't run GCC's
+ * static constructors - so the interface object is created at reset. */
+#include "ymfm_opl.cpp"
 #include "ymfm_glue.h"
 
 #define OPL3_CLOCK 14318180u
@@ -39,7 +47,7 @@ public:
     }
 };
 
-static ymfm::ymfm_interface g_intf;
+static ymfm::ymfm_interface *g_intf;
 static vopl3_ymf262 *g_chip;
 static unsigned long g_step;        /* native samples per output sample, 16.16 */
 static unsigned long g_pos;         /* position between g_prev and g_cur, 16.16 */
@@ -82,7 +90,10 @@ static void chip_sample(int *lr)
 
 extern "C" void ymfm_reset(unsigned rate)
 {
-    if (!g_chip) g_chip = new vopl3_ymf262(g_intf);
+    if (!g_chip) {
+        g_intf = new ymfm::ymfm_interface;
+        g_chip = new vopl3_ymf262(*g_intf);
+    }
     g_chip->reset();
     g_step = (unsigned long)((double)g_chip->sample_rate(OPL3_CLOCK) * 65536.0 / rate + 0.5);
     g_now = g_last = 0;

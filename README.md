@@ -98,7 +98,7 @@ slower CPUs, where cycle-accurate synthesis is a real load — and `VOPLDB.EXE`
 uses **DOSBox's DBOPL**, which needs only a small fraction of the CPU of either
 Nuked build but is less accurate (it computes directly at the output rate, and
 only for the voices that are sounding), and `VOPLYM.EXE` uses **ymfm**, the
-OPL3 emulator from MAME, which falls between the two Nuked builds in CPU cost.
+OPL3 emulator from MAME, at about the CPU cost of Nuked-OPL3-fast.
 Whichever is chosen gets installed as `C:\VOPL3\VOPLSRV.EXE`.
 
 FM volume is adjustable from the **control panel** (applies live — see
@@ -209,10 +209,11 @@ tray; X exits. `INSTALL.BAT` asks whether it should start with Windows
 | **Nuked OPL3** (`opl3.c`) | Nuke.YKT | LGPL 2.1 | The actual OPL3 emulator inside the renderer |
 | **Nuked-OPL3-fast** | tgies (fork of Nuked OPL3) | LGPL 2.1 | Alternate renderer backend — bit-exact output at ~half the CPU cost |
 | **DBOPL** (`dbopl.cpp`) | The DOSBox Team (DOSBox SVN r4494) | GPL v2 or later | Third renderer backend — far less CPU, less accurate |
-| **ymfm** (`ymfm_opl.cpp`) | Aaron Giles (MAME's FM cores) | BSD 3-clause | Fourth renderer backend — CPU cost between the two Nuked builds |
+| **ymfm** (`ymfm_opl.cpp`) | Aaron Giles (MAME's FM cores) | BSD 3-clause | Fourth renderer backend — about the CPU cost of Nuked-OPL3-fast |
 | **vmdisp9x** VxD glue (`vmm.h`, `io32.h`, `code32.h`) + `fixlink` | JHRobotics | MIT | Building a loadable Win9x VxD with Open Watcom |
 | **SBEMUL.SYS** | Microsoft (stock Win98) | — | Patched in place for coexistence; **not** redistributed |
 | **Open Watcom** | — | — | Compiler/linker that still targets Win9x (16/32-bit) |
+| **GCC** (32-bit MinGW, e.g. MSYS2's mingw32) | — | — | Compiles the emulator cores only (~2x faster code than Watcom's); linked by Watcom |
 
 ## License
 
@@ -271,7 +272,8 @@ BUILD.md     build prerequisites and step-by-step
 - **Build:** run the `build.ps1` in `vxd/`, `renderer/`, `gui/`, then
   `installer/` (the last assembles `installer/dist/`, the files you copy to the
   target). `vxd/build.ps1 -Serial` re-enables COM1 debug tracing (off by default).
-  Prerequisites (Open Watcom 2.0) and step-by-step are in **[BUILD.md](BUILD.md)**.
+  Prerequisites (Open Watcom 2.0, plus a 32-bit MinGW GCC for the emulator
+  cores) and step-by-step are in **[BUILD.md](BUILD.md)**.
 - **Install on the Win98/ME machine:** copy the `dist/` folder over and run
   `INSTALL.BAT` from a DOS box — it installs the VxD (boot-loaded), installs the
   renderer (autostarts hidden; you pick one of the four builds), installs the

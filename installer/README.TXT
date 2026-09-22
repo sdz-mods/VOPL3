@@ -26,7 +26,7 @@ INSTALL
             recommended, especially on slower machines),
         3 = DOSBox DBOPL (DOSBox's emulator: a small fraction of the CPU
             use of 1 or 2, but less accurate),
-        4 = ymfm (MAME's emulator: CPU use between 2 and 1),
+        4 = ymfm (MAME's emulator: about the CPU use of 2),
     - installs the control panel (C:\VOPL3\VOPLCFG.EXE; you choose whether
       it starts with Windows, minimized to the system tray),
     - asks who handles the FM ports and the MIDI ports (see CHOICES below),
