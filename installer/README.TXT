@@ -47,7 +47,8 @@ USE
   effects (via SBEMUL) at the same time.
 
 CHOICES (asked by INSTALL.BAT)
-  FM - the AdLib/OPL3 ports 388-38B:
+  FM - the AdLib/OPL3 ports 388-38B and the Sound Blaster FM ports 2x8/2x9
+  (base+8/+9, see ABOUT THE SBEMUL PATCH):
     VOPL3 (recommended)  SBEMUL is steered away from these ports, and VOPL3
                          traps them and synthesizes the music.
     Left free            SBEMUL is steered away from these ports, and VOPL3
@@ -131,9 +132,11 @@ ABOUT THE SBEMUL PATCH
   it leaves the AdLib ports 388-38B and the Sound Blaster's FM ports at
   base+8/+9 (228/229 at base 220) alone, and keeps its digital sound.
   INSTALL.BAT sets it when FM = VOPL3 or left free, and removes it when
-  FM = SBEMUL. Freeing base+8/+9 as well matters: some games (e.g. those
-  using the DiamondWare Sound ToolKit) look for the FM chip there first and
-  only fall back to 388 if nothing answers.
+  FM = SBEMUL. With FM = VOPL3, VOPL3 then traps both groups - base+8/+9
+  for every SB base (220/240/260/280), so it needs no base setting - as a
+  real Sound Blaster answers with the same chip at both. Some games (e.g.
+  those using the DiamondWare Sound ToolKit) look for the FM chip at
+  base+8 first and only fall back to 388 if nothing answers.
   MIDI: SBPATCH.EXE changes the MPU-401 port entries (330/331) inside your
   own SBEMUL.SYS to unused ports and fixes the PE checksum, so SBEMUL keeps
   its digital sound and leaves the MIDI ports alone. SoftFM is known to work

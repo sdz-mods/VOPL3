@@ -2,8 +2,9 @@
  * VOPL3.VXD - OPL3/AdLib port-trap driver for Windows 9x
  *
  * A ring-0 static VxD. It installs VMM I/O handlers on the AdLib/OPL ports
- * 0x388-0x38B (when the renderer asks, see fm_trap_install) and, for every
- * trapped access (from a DOS box, or in principle
+ * 0x388-0x38B and the Sound Blaster FM ports base+8/+9 (when the renderer
+ * asks, see fm_trap_install) and, for every trapped access (from a DOS box,
+ * or in principle
  * any Win16/Win32 program that writes those ports):
  *   - latches the OPL register index and captures each (register, data) write
  *     into a ring buffer (allocated from the VMM heap);
@@ -514,23 +515,28 @@ static void do_install(void)
     S.ring_addr  = heap_alloc(RING_SIZE * 4);      /* OPL register ring   */
     S.midi_addr  = heap_alloc(MIDI_RING_SIZE);     /* MPU-401 MIDI byte ring */
 
-    /* No ports are trapped at boot. Both the OPL ports (388-38B) and the
-     * MPU-401 ports (330/331) are trapped ON DEMAND, when the renderer asks
-     * (IOCTL_VOPL3_FM_ENABLE / IOCTL_VOPL3_MIDI_ENABLE) per the choices made
-     * at install - and only where SBPATCH steered SBEMUL away from them.
-     * SBEMUL tears its whole emulation down (digital audio included) if
-     * another VxD owns a port it still wants, so e.g. with FM left to SBEMUL,
-     * which then keeps 388, we must never grab it. */
+    /* No ports are trapped at boot. Both the FM ports (see fm_trap_install)
+     * and the MPU-401 ports (330/331) are trapped ON DEMAND, when the
+     * renderer asks (IOCTL_VOPL3_FM_ENABLE / IOCTL_VOPL3_MIDI_ENABLE) per the
+     * choices made at install - and only where the installer steered SBEMUL
+     * away from them (SoftFM=1 for FM, SBPATCH for MIDI). SBEMUL tears its
+     * whole emulation down (digital audio included) if another VxD owns a
+     * port it still wants, so e.g. with FM left to SBEMUL, which then keeps
+     * 388 and base+8/+9, we must never grab them. */
     ser_str("\nVOPL3: Device_Init done (ports are trapped on demand)\n");
 }
 
-/* Trap ONLY the dedicated AdLib/OPL ports 388-38B. We must not trap the
- * SoundBlaster base range (220/221/228/229): those belong to SBEMUL's SB
- * emulation (DSP + mixer + SB-native FM), and stealing them kills SBEMUL's
- * digital audio for DOS games. 388-38B is the standard AdLib/OPL3 window,
- * outside the SB base, so SBEMUL keeps working. In-game: set Music=AdLib
- * (-> 388 -> here -> renderer) and FX=Sound Blaster (-> SBEMUL) to get
- * OPL3 music AND digital effects at the same time. */
+/* Trap the FM ports: the AdLib/OPL3 ports 388-38B, and the Sound Blaster's
+ * own FM ports at base+8/+9 (228/229 with the SB at 220), where a real SB
+ * answers with the same chip. Asked for only when VOPL3 plays FM, and then
+ * SBEMUL (SoftFM=1) claims neither group. base+8/+9 is trapped for every SB
+ * base (220/240/260/280), so the VxD needs no configured base: the pairs
+ * no game uses just see no traffic. They decode like 388/389 (even port =
+ * index/status, odd = data, bank 0). The rest of the SB base range (DSP,
+ * mixer, and base+0..3) stays SBEMUL's - stealing any of it kills SBEMUL's
+ * digital audio for DOS games. In-game: Music=AdLib (-> 388 -> here ->
+ * renderer) and FX=Sound Blaster (-> SBEMUL) give OPL3 music AND digital
+ * effects at the same time. */
 static void fm_trap_install(void)
 {
     DWORD r;
@@ -541,6 +547,17 @@ static void fm_trap_install(void)
     r = io_install(0x389, (DWORD)io_trap);  ser_str("  389 "); ser_str(r ? "OK\n" : "TAKEN\n");
     r = io_install(0x38A, (DWORD)io_trap);  ser_str("  38A "); ser_str(r ? "OK\n" : "TAKEN\n");
     r = io_install(0x38B, (DWORD)io_trap);  ser_str("  38B "); ser_str(r ? "OK\n" : "TAKEN\n");
+    {   /* base+8/+9 for SB bases 220-280; a pair another VxD already owns
+         * is simply left to it */
+        static const char *const name[4] = { "  228/229 ", "  248/249 ",
+                                             "  268/269 ", "  288/289 " };
+        DWORD i;
+        for (i = 0; i < 4; i++) {
+            r = io_install(0x228 + i * 0x20, (DWORD)io_trap);
+            if (r) io_install(0x229 + i * 0x20, (DWORD)io_trap);
+            ser_str(name[i]); ser_str(r ? "OK\n" : "TAKEN\n");
+        }
+    }
 #else
     (void)r; ser_str("  (NOINSTALL build: no ports trapped)\n");
 #endif
@@ -621,7 +638,7 @@ void __stdcall vm_destroyed(DWORD vm)
                                          * (1-shot); [1] 1 if the MIDI source
                                          * is a DOS box, 0 if the System VM or
                                          * unknown (only with an 8-byte buffer) */
-#define IOCTL_VOPL3_FM_ENABLE    0x1005 /* start trapping 0x388-0x38B (once)  */
+#define IOCTL_VOPL3_FM_ENABLE    0x1005 /* start trapping the FM ports (once) */
 
 static DWORD sys_vm_handle(void)
 {

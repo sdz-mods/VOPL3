@@ -31,7 +31,8 @@ VOPL3 is for systems whose audio hardware has **no FM synthesizer of its own** a
 that rely on **SBEMUL** for DOS Sound Blaster support — the common case on modern
 HD-Audio / AC'97 / USB-audio machines. It plays the synthesized OPL3 through the
 normal Windows output, so the *output* side works with any sound card; but the
-*input* side depends on VOPL3 owning ports **0x388–0x38B**, and VMM's
+*input* side depends on VOPL3 owning the FM ports (**0x388–0x38B**, and the
+Sound Blaster's 0x2x8/0x2x9 — base+8/+9, see below), and VMM's
 `Install_IO_Handler` grants a port to a single owner. That trap sits at the VMM
 I/O layer, so it also catches raw OPL-port writes from **Win16/Win32** programs in
 the System VM, not just DOS boxes (verified).
@@ -50,7 +51,7 @@ flowchart TD
     G["DOS game (Win9x DOS box)"]
 
     subgraph k["ring 0 (kernel)"]
-        VXD["VOPL3.VXD<br/>traps OPL ports 0x388-0x38B when VOPL3 plays FM (VMM Install_IO_Handler)<br/>+ MPU-401 ports 0x330-0x331 when VOPL3 handles MIDI<br/>keeps AdLib detection alive<br/>queues writes into ring buffers"]
+        VXD["VOPL3.VXD<br/>traps OPL ports 0x388-0x38B + SB FM ports base+8/+9 when VOPL3 plays FM (VMM Install_IO_Handler)<br/>+ MPU-401 ports 0x330-0x331 when VOPL3 handles MIDI<br/>keeps AdLib detection alive<br/>queues writes into ring buffers"]
         SB["SBEMUL.SYS<br/>digital audio<br/>(+ MIDI / fake AdLib detection, if left to SBEMUL)"]
     end
 
@@ -73,8 +74,9 @@ flowchart TD
 ### 1. `VOPL3.VXD` — the kernel port-trap (ring 0)
 A Win9x **static VxD** loaded at boot. Only ring-0 code can trap port I/O this
 way, so this is where trapping has to happen. It uses VMM's
-`Install_IO_Handler` to hook ports **0x388–0x38B** (when VOPL3 plays FM —
-hooked when the renderer asks at startup, not at boot), and on every access it:
+`Install_IO_Handler` to hook ports **0x388–0x38B** and the Sound Blaster's FM
+ports at base+8/+9 (when VOPL3 plays FM — hooked when the renderer asks at
+startup, not at boot), and on every access it:
 - records the OPL **address/data** register writes and pushes each `(register,
   data)` pair into a small **ring buffer** allocated from the VMM heap;
 - emulates just enough OPL **status / timer** behaviour to keep AdLib *detection*
@@ -116,11 +118,13 @@ SBEMUL away from them instead:
 - **FM:** SBEMUL's own registry value `SoftFM`
   (`HKLM\Software\Microsoft\Multimedia\WDMAudio\SBEmulator`). With
   `SoftFM=1`, SBEMUL leaves the AdLib ports 0x388–0x38B **and** the Sound
-  Blaster's FM ports at base+8/+9 (0x228/0x229) alone, and keeps its digital
-  audio. Freeing base+8/+9 matters for games that look for the FM chip there
-  first and only fall back to 0x388 if nothing answers (e.g. the DiamondWare
-  Sound ToolKit). `INSTALL.BAT` sets it when FM is VOPL3 or left free, and
-  removes it when FM stays with SBEMUL.
+  Blaster's FM ports at base+8/+9 (e.g. 0x228/0x229) alone, and keeps its
+  digital audio. `INSTALL.BAT` sets it when FM is VOPL3 or left free, and
+  removes it when FM stays with SBEMUL. With FM = VOPL3, VOPL3 then traps
+  both groups, as a real Sound Blaster answers with the same chip at both:
+  base+8/+9 for every SB base (0x220/0x240/0x260/0x280), so the VxD needs no
+  base setting. That covers games that look for the FM chip at base+8 first
+  (e.g. the DiamondWare Sound ToolKit) or use only that address.
 - **MIDI:** `SBPATCH.EXE` moves SBEMUL's MPU-401 port-table entries
   (0x330/0x331) to unused ports inside the user's own `SBEMUL.SYS`, so SBEMUL
   keeps its digital audio and stops touching them, leaving them for VOPL3.
@@ -140,7 +144,7 @@ SBEMUL as needed (including FM tables moved by earlier VOPL3 versions, where
 
 | | **VOPL3** (recommended) | **Left free** | **SBEMUL** (stock) |
 |---|---|---|---|
-| **FM** — ports 0x388–0x38B | SBEMUL is steered away from these ports; VOPL3 traps them and synthesizes the music | SBEMUL is steered away from these ports, and VOPL3 doesn't trap them either — they are free for anything else that uses them | games detect an AdLib, but AdLib music is silent |
+| **FM** — ports 0x388–0x38B, 0x2x8/0x2x9 | SBEMUL is steered away from these ports; VOPL3 traps them and synthesizes the music | SBEMUL is steered away from these ports, and VOPL3 doesn't trap them either — they are free for anything else that uses them | games detect an AdLib, but AdLib music is silent |
 | **MIDI** — ports 0x330/0x331 | SBEMUL is steered away from these ports; VOPL3 sends DOS-game MIDI to any device (see **MIDI** below) | — | MIDI plays on the Microsoft GS Wavetable synth |
 
 Leaving both to SBEMUL isn't offered, since VOPL3 would have nothing to do. When

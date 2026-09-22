@@ -23,7 +23,7 @@ PAUSE
 
 :askfm
 ECHO.
-ECHO   FM - the AdLib/OPL3 ports 388-38B:
+ECHO   FM - the AdLib/OPL3 ports 388-38B and the Sound Blaster FM ports 2x8/2x9:
 ECHO     1 = VOPL3      - SBEMUL is steered away from these ports, and VOPL3
 ECHO                      traps them and synthesizes the music. Recommended.
 ECHO     2 = Left free  - SBEMUL is steered away from these ports, and VOPL3
@@ -146,7 +146,7 @@ REGEDIT /S VOPLCFG.REG
 
 ECHO [4/5] Registering VOPL3 (boot VxD + renderer autostart + choices) ...
 REM INSTALL.REG sets FM = VOPL3, MIDI = SBEMUL, and SBEMUL's SoftFM=1 (it
-REM leaves all its FM ports alone, 388-38B and base+8/+9); the others
+REM leaves its FM ports 388-38B and base+8/+9 alone); the others
 REM override that. FMSBEMUL.REG removes SoftFM again (stock SBEMUL FM).
 REM Written BEFORE patching, so a failed patch finished by hand later (see
 REM sberr) still finds the choices in place.
@@ -164,7 +164,7 @@ ECHO   ===================  INSTALL COMPLETE  ===================
 ECHO   Please REBOOT now.
 ECHO   After reboot, in your DOS game set Sound FX = Sound Blaster, and Music:
 IF "%VOPLFM%"=="vopl" ECHO     AdLib (or OPL3)                - played by VOPL3
-IF "%VOPLFM%"=="free" ECHO     AdLib (or OPL3)                - ports 388-38B are left free
+IF "%VOPLFM%"=="free" ECHO     AdLib (or OPL3)                - the FM ports are left free
 IF "%VOPLMIDI%"=="vopl" ECHO     General MIDI (MPU-401, 330)    - played by VOPL3
 IF "%VOPLMIDI%"=="sbemul" ECHO     General MIDI (MPU-401, 330)    - played by SBEMUL
 ECHO   The renderer C:\VOPL3\VOPLSRV.EXE starts automatically at login.

@@ -242,7 +242,7 @@ static void refresh(void)
 
     if (live && s->ver >= 3 && s->fm_mode != 1)
         sprintf(line, "FM: off (%s)      Priority: %s",
-                s->fm_mode == 2 ? "ports 388-38B left free" : "left to SBEMUL",
+                s->fm_mode == 2 ? "ports left free" : "left to SBEMUL",
                 s->realtime ? "realtime" : "normal");
     else if (live)
         sprintf(line, "FM: %s      Priority: %s",
@@ -333,12 +333,12 @@ static void build_ui(HWND w)
 {
     /* the diagrams' second lines start at their first line's first "->",
      * measured in the real font so the arrows line up exactly */
-    int ax_opl  = 20 + textw("ports 388-38B ");
+    int ax_opl  = 20 + textw("ports 388-38B, 2x8/2x9 ");
     int ax_midi = 20 + textw("ports 330-331 ");
 
     /* ============ Virtual OPL3 ============ */
     mk(w, "BUTTON", "Virtual OPL3", BS_GROUPBOX, 8, 6, 388, 226, 0);
-    mk(w, "STATIC", "ports 388-38B -> VXD trap -> VOPLSRV (Nuked OPL3)",
+    mk(w, "STATIC", "ports 388-38B, 2x8/2x9 -> VXD trap -> VOPLSRV",
        0, 20, 26, 368, 18, 0);
     mk(w, "STATIC", "-> waveOut -> KMIXER -> sound card",
        0, ax_opl, 44, 388 - ax_opl, 18, 0);
