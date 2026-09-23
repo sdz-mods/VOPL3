@@ -111,7 +111,9 @@ where the music is stepped per frame), by roughly the share of CPU time the
 renderer takes. On a fast CPU that share is too small to notice; on a slow
 one, choose the DBOPL build for such games — it takes several times less CPU
 than the others. Games that time themselves off the timer interrupt (e.g.
-Doom, Duke Nukem 3D) are not affected.
+Doom, Duke Nukem 3D) are not affected. None of this is particular to VOPL3:
+any background program taking a few percent of a slow CPU at a high priority
+slows such a game the same way (measured with an unrelated load generator).
 
 FM volume is adjustable from the **control panel** (applies live — see
 below) or in `C:\VOPL3\VOPL3.INI` (`volume=<percent>`, default **200**, max
