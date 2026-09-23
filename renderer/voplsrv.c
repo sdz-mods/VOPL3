@@ -89,6 +89,7 @@ static DWORD     frames = FRAMES;  /* frames per buffer at that rate          */
 static int       prio_mode;        /* 0=auto 1=realtime 2=normal; priority=  */
 static HANDLE    hev;              /* waveOut buffer-completion event         */
 static DWORD     idleclose_ms;     /* [renderer] idleclose=; 0 = never close  */
+static UINT      timer_res = 5;    /* [renderer] timerres=; ms, see load_timerres */
 static int       out_closed;       /* output device released while FM idle    */
 
 static HMIDIOUT  hmidi;            /* MPU-401 MIDI output, open only while used */
@@ -235,6 +236,31 @@ static void set_rate(DWORD r)
 {
     rate   = r;
     frames = (DWORD)FRAMES * r / RATE;
+}
+
+/* [renderer] timerres=<ms>: the timer resolution the renderer asks Windows
+ * for (timeBeginPeriod), default 5, clamped 1-20.
+ *
+ * Win9x's default is ~55 ms, which would deliver the loop's fallback wakes
+ * in clumps - MIDI bytes are forwarded on those wakes, so they would clump
+ * audibly. The FM refills do NOT need it: they run off the waveOut
+ * completion event, which fires whatever the timer resolution is.
+ *
+ * Not 1 ms, though 1 ms is allowed here: asking for 1 ms makes Windows run
+ * the PC timer at 1000 Hz for the whole machine, and some DOS games then
+ * never get through their startup (seen with a 1993 title that hangs before
+ * its first frame; 5 ms and 10 ms are both fine, and the wake interval makes
+ * no difference). Read ONCE, at startup.
+ */
+static void load_timerres(void)
+{
+    char ini[MAX_PATH];
+    UINT r;
+    ini_path(ini);
+    r = GetPrivateProfileInt("renderer", "timerres", 5, ini);
+    if (r < 1)  r = 1;
+    if (r > 20) r = 20;
+    timer_res = r;
 }
 
 /* [renderer] rate=<hz>: the output sample rate - one of the standard rates
@@ -721,7 +747,7 @@ static void audio_stop(void)
     }
     if (g_stat)   { UnmapViewOfFile(g_stat); g_stat = NULL; }
     if (g_statmap){ CloseHandle(g_statmap);  g_statmap = NULL; }
-    timeEndPeriod(1);
+    timeEndPeriod(timer_res);
 }
 
 static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -798,10 +824,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     g_msg_panic  = RegisterWindowMessage(VOPL3_MSG_PANIC);
 
     /* Win9x's default scheduler tick is ~55 ms, so a polling loop that falls
-     * back to Sleep() starves the audio buffers in bursts even when the CPU is
-     * idle. Ask for 1 ms timer granularity and, below, drive the refill loop
-     * off a waveOut completion event so we wake exactly when a buffer frees. */
-    timeBeginPeriod(1);
+     * back to Sleep() gets its wakes in bursts even when the CPU is idle. Ask
+     * for a finer timer ([renderer] timerres=, see load_timerres - NOT 1 ms,
+     * which upsets some DOS games) and, below, drive the refill loop off a
+     * waveOut completion event so we wake exactly when a buffer frees. */
+    load_timerres();
+    timeBeginPeriod(timer_res);
 
     load_settings();
     load_rate();

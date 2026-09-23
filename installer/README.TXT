@@ -101,6 +101,13 @@ TUNING (advanced - C:\VOPL3\VOPL3.INI, see the comments in the file)
                   it (e.g. 480) if FM audio stutters in a regular pattern on
                   your sound driver; costs some FM latency. Applied at
                   renderer start.
+  timerres=<ms>   timer resolution the renderer asks Windows for (default 5,
+                  range 1-20). Windows 9x on its own wakes a waiting program
+                  only about every 55 ms, which would make MIDI arrive in
+                  audible clumps; FM does not depend on it. Do NOT set 1:
+                  at 1 ms Windows runs the PC timer at 1000 Hz machine-wide
+                  and some DOS games hang before they start. Applied at
+                  renderer start.
   rate=<hz>       output sample rate: 11025, 16000, 22050, 32000, 44100
                   or 48000 (default; any other value counts as 48000). With
                   the Nuked and ymfm builds the OPL3 engine always runs at
