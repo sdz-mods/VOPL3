@@ -91,12 +91,13 @@ Run these from the repo root, in order:
   ymfm's notice for `VOPLYM.EXE`), `VOPLCFG.EXE`,
   `SBPATCH.EXE`, `VOPLSTOP.EXE`, `MIDILIST.EXE`, and the CRLF-normalized
   `INSTALL/UNINSTALL` `.BAT` + `.REG` (incl. `MIDION.REG`, `FMSBEMUL.REG`,
-  `FMFREE.REG`, `VOPLCFG.REG`) +
+  `FMFREE.REG`, `RUNFAST.REG`, `RUNDB.REG`, `RUNYM.REG`, `VOPLCFG.REG`) +
   `README.TXT` + `VOPL3.INI`. **`dist/` is the folder you copy to the Win98/ME
   machine.** `INSTALL.BAT` asks who handles the FM ports and the MIDI ports,
-  which renderer build to install (if VOPL3 plays FM), and whether the
-  control panel autostarts with Windows; the chosen renderer lands as
-  `C:\VOPL3\VOPLSRV.EXE`.
+  which renderer build to start with (if VOPL3 plays FM), and whether the
+  control panel autostarts with Windows. All four renderer builds are
+  installed to `C:\VOPL3`; the autostart entry says which one runs, and the
+  control panel switches it.
 
 Build outputs (`vxd/vopl3.vxd`, `renderer/voplsrv.exe`, `renderer/voplfast.exe`,
 `renderer/vopldb.exe`, `renderer/voplym.exe`,

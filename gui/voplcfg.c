@@ -2,8 +2,10 @@
  *
  * A small system-tray app that talks to the VOPL3 driver and renderer, split
  * into the package's two functions:
- *   Virtual OPL3       - FM volume (applied LIVE, no restart), renderer/
- *                        backend/FM/priority status, OPL3 debug counters;
+ *   Virtual OPL3       - FM volume (applied LIVE, no restart), which OPL3
+ *                        emulator runs (switched by restarting the renderer),
+ *                        renderer/backend/FM/priority status, OPL3 debug
+ *                        counters;
  *   MPU-401 MIDI bridge- MIDI output device selection (applied LIVE),
  *                        bridge status, MIDI debug counters.
  * Settings are written to VOPL3.INI (so everything works identically with no
@@ -15,7 +17,8 @@
  * Minimize hides to the system tray; X / Alt+F4 exits. INSTALL.BAT offers a
  * "start with Windows" option (Run-key entry launching "VOPLCFG /tray").
  *
- * Install alongside VOPLSRV.EXE (C:\VOPL3) so it edits the same VOPL3.INI.
+ * Install alongside the renderers (C:\VOPL3) so it edits the same VOPL3.INI
+ * and finds the renderer builds to switch between.
  * Build with Open Watcom - see build.ps1.
  */
 #define WINVER        0x0400        /* Win98-compatible headers (tray struct etc.) */
@@ -38,11 +41,11 @@
 #define STALE_MS  3000              /* renderer status older than this = stopped */
 
 enum {
-    ID_DEV = 1001, ID_VOL, ID_VOLTXT, ID_APPLY,
+    ID_DEV = 1001, ID_VOL, ID_VOLTXT, ID_APPLY, ID_EMU,
     ID_TRAY_OPEN, ID_TRAY_EXIT
 };
 
-static HWND   g_hwnd, g_dev, g_vol, g_voltxt, g_msg;
+static HWND   g_hwnd, g_dev, g_vol, g_voltxt, g_msg, g_emu;
 static HWND   g_opl_l1, g_opl_l2, g_opl_s1, g_opl_s2;   /* OPL3 status/stats */
 static HWND   g_mid_l1, g_mid_s1;                       /* MIDI status/stats */
 static HWND   g_rev;                                    /* bottom revisions  */
@@ -137,6 +140,134 @@ static int renderer_live(VOPL3_STATUS *s)
     return s && (GetTickCount() - s->tick) < STALE_MS;
 }
 
+/* ------------------------------------------------------------- OPL3 emulator
+ * All four renderer builds are installed next to this program; the autostart
+ * entry (HKLM ...\Run, value VOPL3Renderer) says which one runs. Switching =
+ * point that entry at another build, close the running renderer and start
+ * the new one. The index is the status block's backend number. */
+#define RUN_KEY "Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+#define RUN_VAL "VOPL3Renderer"
+static const char *const emu_exe[4]  = { "VOPLSRV.EXE", "VOPLFAST.EXE",
+                                         "VOPLDB.EXE",  "VOPLYM.EXE" };
+static const char *const emu_name[4] = {
+    "Nuked OPL3 (reference, most accurate)",
+    "Nuked OPL3 fast (same output, ~half the CPU)",
+    "DOSBox DBOPL (least CPU, less accurate)",
+    "ymfm (MAME's emulator)" };
+static int g_emu_cur = -1;          /* build the autostart entry points at */
+
+/* C:\VOPL3\<exe>: the renderer builds live next to this program */
+static void emu_path(int i, char *out)
+{
+    char *p;
+    GetModuleFileName(NULL, out, MAX_PATH);
+    p = strrchr(out, '\\');
+    strcpy(p ? p + 1 : out, emu_exe[i]);
+}
+
+/* which build the autostart entry starts (-1: none of the four) */
+static int emu_from_run(void)
+{
+    HKEY  k;
+    char  v[MAX_PATH], *b;
+    DWORD sz = sizeof(v), type = 0;
+    int   i, r = -1;
+    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, RUN_KEY, 0, KEY_READ, &k) != ERROR_SUCCESS)
+        return -1;
+    if (RegQueryValueEx(k, RUN_VAL, NULL, &type, (BYTE *)v, &sz) == ERROR_SUCCESS
+            && type == REG_SZ) {
+        v[sizeof(v) - 1] = 0;
+        b = strrchr(v, '\\');
+        b = b ? b + 1 : v;
+        for (i = 0; i < 4; i++)
+            if (!lstrcmpi(b, emu_exe[i])) r = i;
+    }
+    RegCloseKey(k);
+    return r;
+}
+
+/* VOPL3 plays FM (install choice; registry Fm, missing = yes) */
+static int fm_is_ours(void)
+{
+    HKEY  k;
+    DWORD v = 1, sz = sizeof(v), type = 0;
+    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, "Software\\VOPL3", 0, KEY_READ, &k) == ERROR_SUCCESS) {
+        if (RegQueryValueEx(k, "Fm", NULL, &type, (BYTE *)&v, &sz) != ERROR_SUCCESS
+                || type != REG_DWORD)
+            v = 1;
+        RegCloseKey(k);
+    }
+    return v == 1;
+}
+
+/* Fill the list and select the build in use: the running renderer's backend
+ * if it's running (older installs had any build copied as VOPLSRV.EXE, so the
+ * file name alone can mislead), else the autostart entry's. Greyed out when
+ * VOPL3 doesn't play FM: then the renderer synthesizes nothing and the
+ * choice doesn't matter. */
+static void fill_emulators(VOPL3_STATUS *s, int live)
+{
+    int i;
+    SendMessage(g_emu, CB_RESETCONTENT, 0, 0);
+    for (i = 0; i < 4; i++) SendMessage(g_emu, CB_ADDSTRING, 0, (LPARAM)emu_name[i]);
+    g_emu_cur = (live && s->backend < 4) ? (int)s->backend : emu_from_run();
+    SendMessage(g_emu, CB_SETCURSEL, g_emu_cur >= 0 ? g_emu_cur : 0, 0);
+    EnableWindow(g_emu, fm_is_ours());
+}
+
+/* Switch to build i: point the autostart entry at it, close the running
+ * renderer (it shuts down cleanly on WM_CLOSE, as for VOPLSTOP) and start
+ * the new one. The driver stays loaded with its ports trapped throughout;
+ * the new renderer starts with a fresh chip (see the README: a game playing
+ * FM at that moment loses its instrument setup). */
+static void switch_emulator(int i)
+{
+    char   path[MAX_PATH], line[160];
+    HKEY   k;
+    HWND   r;
+    int    t;
+    STARTUPINFO si;
+    PROCESS_INFORMATION pi;
+
+    emu_path(i, path);
+    if (GetFileAttributes(path) == (DWORD)-1) {
+        sprintf(line, "%s is not installed - run INSTALL.BAT again.", emu_exe[i]);
+        SetWindowText(g_msg, line);
+        return;
+    }
+    if (RegCreateKey(HKEY_LOCAL_MACHINE, RUN_KEY, &k) != ERROR_SUCCESS ||
+        RegSetValueEx(k, RUN_VAL, 0, REG_SZ, (BYTE *)path, lstrlen(path) + 1) != ERROR_SUCCESS) {
+        SetWindowText(g_msg, "Could not update the autostart entry - not switched.");
+        return;
+    }
+    RegCloseKey(k);
+    g_emu_cur = i;
+
+    r = FindWindow(VOPL3_WNDCLASS, NULL);
+    if (r) {
+        SetWindowText(g_msg, "Stopping the renderer ...");
+        UpdateWindow(g_msg);
+        PostMessage(r, WM_CLOSE, 0, 0);
+        for (t = 0; t < 50 && FindWindow(VOPL3_WNDCLASS, NULL); t++)
+            Sleep(100);                        /* up to ~5 s, as VOPLSTOP */
+        if (FindWindow(VOPL3_WNDCLASS, NULL)) {
+            SetWindowText(g_msg, "The renderer didn't stop - takes effect at next start.");
+            return;
+        }
+        Sleep(200);                            /* let it release the device */
+    }
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    if (CreateProcess(path, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        sprintf(line, "Switched to %s.", emu_exe[i]);
+    } else {
+        sprintf(line, "Could not start %s - it will start with Windows.", emu_exe[i]);
+    }
+    SetWindowText(g_msg, line);
+}
+
 /* ---------------------------------------------------------------- MIDI list */
 /* Combo item 0 = MIDI Mapper (INI value 65535); items 1.. = device index-1. */
 static void fill_devices(void)
@@ -209,12 +340,19 @@ static void apply_settings(void)
     sprintf(num, "%d", dev); WritePrivateProfileString("midi", "device", num, g_ini);
     sprintf(num, "%d", vol); WritePrivateProfileString("renderer", "volume", num, g_ini);
 
+    /* a different OPL3 emulator: restart the renderer as that build (it
+     * reads the INI just saved as it starts) */
+    if (IsWindowEnabled(g_emu)) {
+        int e = (int)SendMessage(g_emu, CB_GETCURSEL, 0, 0);
+        if (e >= 0 && e < 4 && e != g_emu_cur) { switch_emulator(e); return; }
+    }
+
     r = FindWindow(VOPL3_WNDCLASS, NULL);
     if (r) {
         PostMessage(r, g_msg_reload, 0, 0);
         SetWindowText(g_msg, "Applied - saved to VOPL3.INI and reloaded the renderer.");
     } else {
-        SetWindowText(g_msg, "Saved to VOPL3.INI. Takes effect when VOPLSRV next starts.");
+        SetWindowText(g_msg, "Saved to VOPL3.INI. Takes effect when the renderer next starts.");
     }
 }
 
@@ -285,7 +423,7 @@ static void refresh(void)
     else if (n)   strcpy(drv, "old");            /* pre-A04 driver: no rev field */
     else          strcpy(drv, "not loaded");
     if (live) revstr(s->rev, ren); else strcpy(ren, "not running");
-    sprintf(line, "VOPL3.VXD: %s            VOPLSRV.EXE: %s", drv, ren);
+    sprintf(line, "VOPL3.VXD: %s            Renderer: %s", drv, ren);
     upd(g_rev, g_p_rev, sizeof(g_p_rev), line);
 
     /* tray tooltip: Shell_NotifyIcon is a SYNCHRONOUS SendMessage into
@@ -338,8 +476,8 @@ static void build_ui(HWND w)
     int ax_midi = 20 + textw("ports 330-331 ");
 
     /* ============ Virtual OPL3 ============ */
-    mk(w, "BUTTON", "Virtual OPL3", BS_GROUPBOX, 8, 6, 388, 226, 0);
-    mk(w, "STATIC", "ports 388-38B, 2x8/2x9 -> VXD trap -> VOPLSRV",
+    mk(w, "BUTTON", "Virtual OPL3", BS_GROUPBOX, 8, 6, 388, 254, 0);
+    mk(w, "STATIC", "ports 388-38B, 2x8/2x9 -> VXD trap -> renderer (OPL3 emulator)",
        0, 20, 26, 368, 18, 0);
     mk(w, "STATIC", "-> waveOut -> KMIXER -> sound card",
        0, ax_opl, 44, 388 - ax_opl, 18, 0);
@@ -355,36 +493,47 @@ static void build_ui(HWND w)
     SendMessage(g_vol, TBM_SETRANGE, TRUE, MAKELONG(0, 400));
     SendMessage(g_vol, TBM_SETTICFREQ, 50, 0);
 
-    g_opl_l1 = mk(w, "STATIC", "", 0, 20, 148, 368, 18, 0);
-    g_opl_l2 = mk(w, "STATIC", "", 0, 20, 166, 368, 18, 0);
-    g_opl_s1 = mk(w, "STATIC", "", 0, 20, 188, 368, 18, 0);
-    g_opl_s2 = mk(w, "STATIC", "", 0, 20, 206, 368, 18, 0);
+    {   /* label sized in the real font, the list takes the rest of the row */
+        int lw = textw("OPL3 emulator:") + 2;
+        mk(w, "STATIC", "OPL3 emulator:", 0, 20, 148, lw, 18, 0);
+        g_emu = mk(w, "COMBOBOX", "", WS_BORDER | WS_VSCROLL | CBS_DROPDOWNLIST | WS_TABSTOP,
+                   26 + lw, 144, 362 - lw, 200, ID_EMU);
+    }
+
+    g_opl_l1 = mk(w, "STATIC", "", 0, 20, 176, 368, 18, 0);
+    g_opl_l2 = mk(w, "STATIC", "", 0, 20, 194, 368, 18, 0);
+    g_opl_s1 = mk(w, "STATIC", "", 0, 20, 216, 368, 18, 0);
+    g_opl_s2 = mk(w, "STATIC", "", 0, 20, 234, 368, 18, 0);
 
     /* ============ MPU-401 MIDI bridge ============ */
-    mk(w, "BUTTON", "MPU-401 MIDI bridge", BS_GROUPBOX, 8, 240, 388, 196, 0);
-    mk(w, "STATIC", "ports 330-331 -> VXD trap -> VOPLSRV MIDI parser",
-       0, 20, 260, 368, 18, 0);
+    mk(w, "BUTTON", "MPU-401 MIDI bridge", BS_GROUPBOX, 8, 268, 388, 196, 0);
+    mk(w, "STATIC", "ports 330-331 -> VXD trap -> renderer (MIDI parser)",
+       0, 20, 288, 368, 18, 0);
     mk(w, "STATIC", "-> midiOut -> any installed MIDI device",
-       0, ax_midi, 278, 388 - ax_midi, 18, 0);
+       0, ax_midi, 306, 388 - ax_midi, 18, 0);
     mk(w, "STATIC", "Bridges MIDI from DOS programs only;",
-       0, 20, 302, 368, 18, 0);
+       0, 20, 330, 368, 18, 0);
     mk(w, "STATIC", "Windows MIDI applications are unaffected.",
-       0, 20, 320, 368, 18, 0);
+       0, 20, 348, 368, 18, 0);
 
-    mk(w, "STATIC", "MIDI output device:", 0, 20, 344, 200, 18, 0);
+    mk(w, "STATIC", "MIDI output device:", 0, 20, 372, 200, 18, 0);
     g_dev = mk(w, "COMBOBOX", "", WS_BORDER | WS_VSCROLL | CBS_DROPDOWNLIST | WS_TABSTOP,
-               20, 362, 368, 200, ID_DEV);
+               20, 390, 368, 200, ID_DEV);
 
-    g_mid_l1 = mk(w, "STATIC", "", 0, 20, 392, 368, 18, 0);
-    g_mid_s1 = mk(w, "STATIC", "", 0, 20, 410, 368, 18, 0);
+    g_mid_l1 = mk(w, "STATIC", "", 0, 20, 420, 368, 18, 0);
+    g_mid_s1 = mk(w, "STATIC", "", 0, 20, 438, 368, 18, 0);
 
     /* ============ bottom ============ */
-    mk(w, "BUTTON", "Apply", 0, 157, 444, 90, 26, ID_APPLY);
-    g_msg = mk(w, "STATIC", "", 0, 20, 476, 368, 18, 0);
-    mk(w, "STATIC", "", SS_ETCHEDHORZ, 8, 498, 388, 2, 0);
-    g_rev = mk(w, "STATIC", "", 0, 20, 506, 368, 18, 0);
+    mk(w, "BUTTON", "Apply", 0, 157, 472, 90, 26, ID_APPLY);
+    g_msg = mk(w, "STATIC", "", 0, 20, 504, 368, 18, 0);
+    mk(w, "STATIC", "", SS_ETCHEDHORZ, 8, 526, 388, 2, 0);
+    g_rev = mk(w, "STATIC", "", 0, 20, 534, 368, 18, 0);
 
     fill_devices();
+    {
+        VOPL3_STATUS *s = rstat();
+        fill_emulators(s, renderer_live(s));
+    }
     {
         int vol = GetPrivateProfileInt("renderer", "volume", 200, g_ini);
         char t[16];
@@ -498,7 +647,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
 
     {
         DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-        RECT rc = { 0, 0, 404, 530 };
+        RECT rc = { 0, 0, 404, 558 };
         AdjustWindowRect(&rc, style, FALSE);
         w = CreateWindow("VOPLCFG", APP_TITLE, style, CW_USEDEFAULT, CW_USEDEFAULT,
                          rc.right - rc.left, rc.bottom - rc.top, NULL, NULL, hInst, NULL);

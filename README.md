@@ -91,7 +91,7 @@ Windows **`waveOut` (WAVE_MAPPER)** path, where **KMIXER** software-mixes it wit
 SBEMUL's digital audio — so **no changes to the sound driver are needed** and the
 *output* is not tied to any particular card (see **Scope** for the input side).
 
-The renderer ships in **four builds**, chosen at install time: `VOPLSRV.EXE`
+The renderer ships in **four builds**, all installed: `VOPLSRV.EXE`
 uses the reference **Nuked OPL3**, `VOPLFAST.EXE` uses **Nuked-OPL3-fast** (a
 bit-exact fork) at roughly **half the CPU cost** — useful on machines with
 slower CPUs, where cycle-accurate synthesis is a real load — and `VOPLDB.EXE`
@@ -99,7 +99,8 @@ uses **DOSBox's DBOPL**, which needs only a small fraction of the CPU of either
 Nuked build but is less accurate (it computes directly at the output rate, and
 only for the voices that are sounding), and `VOPLYM.EXE` uses **ymfm**, the
 OPL3 emulator from MAME, at about the CPU cost of Nuked-OPL3-fast.
-Whichever is chosen gets installed as `C:\VOPL3\VOPLSRV.EXE`.
+The installer asks which one to start with; the **control panel** switches
+between them at any time (see below).
 
 **Slower CPUs and games timed on the VGA retrace.** Some DOS games time their
 frames by polling the VGA for the vertical retrace, and some of those also
@@ -201,6 +202,12 @@ An optional Win32 **system-tray app** installed alongside the renderer:
 - **MIDI output device** and **FM volume**, applied **live** — Apply writes
   `C:\VOPL3\VOPL3.INI` (so everything works identically with no GUI running)
   and pokes the running renderer to re-read it; no reboot, no restart.
+- **OPL3 emulator**: pick one of the four builds and Apply — the renderer is
+  restarted as that build (and becomes the one that starts with Windows); no
+  reboot. The new renderer starts with a fresh chip, so a game playing FM
+  music at that moment loses the instruments it had loaded — its music may
+  stay silent or sound wrong until it loads new ones. Switch between games,
+  or restart the music.
 - **Status at a glance**: renderer running/backend, FM playing/idle, dynamic
   priority, MIDI bridge + synth state, and the driver/renderer revisions.
 - **Debug counters** (the same ones `VOPLSTAT.EXE` prints): OPL ring
@@ -287,7 +294,7 @@ BUILD.md     build prerequisites and step-by-step
   cores) and step-by-step are in **[BUILD.md](BUILD.md)**.
 - **Install on the Win98/ME machine:** copy the `dist/` folder over and run
   `INSTALL.BAT` from a DOS box — it installs the VxD (boot-loaded), installs the
-  renderer (autostarts hidden; you pick one of the four builds), installs the
+  renderer (all four builds; autostarts hidden, you pick which), installs the
   control panel (you choose whether it starts with
   Windows), asks who handles the FM and the MIDI ports (see **Install
   choices** above), and sets up SBEMUL accordingly (`SoftFM`, `SBEMUL.SYS`

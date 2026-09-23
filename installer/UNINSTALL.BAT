@@ -17,12 +17,20 @@ DEL C:\WINDOWS\SYSTEM32\DRIVERS\SBEMUL.SYS.orig
 ECHO Removing registry entries ...
 REGEDIT /S UNINSTALL.REG
 
+ECHO Removing the license texts ...
+REM Not in use, so deleted now - and WININIT.INI below can't take their long
+REM names anyway (it runs before Windows, with 8.3 names only).
+FOR %%F IN (NUKED-OPL3 NUKED-OPL3-FAST DBOPL YMFM) DO IF EXIST C:\VOPL3\%%F-LICENSE.txt DEL C:\VOPL3\%%F-LICENSE.txt
+
 ECHO Scheduling VOPL3 file removal (finished at next reboot) ...
 REM  The VxD is loaded and the renderer is running, so they cannot be deleted
 REM  now. WININIT.INI removes them at next boot, before Windows loads them.
 ECHO [rename]>C:\WINDOWS\WININIT.INI
 ECHO NUL=C:\WINDOWS\SYSTEM\VOPL3.VXD>>C:\WINDOWS\WININIT.INI
 ECHO NUL=C:\VOPL3\VOPLSRV.EXE>>C:\WINDOWS\WININIT.INI
+ECHO NUL=C:\VOPL3\VOPLFAST.EXE>>C:\WINDOWS\WININIT.INI
+ECHO NUL=C:\VOPL3\VOPLDB.EXE>>C:\WINDOWS\WININIT.INI
+ECHO NUL=C:\VOPL3\VOPLYM.EXE>>C:\WINDOWS\WININIT.INI
 ECHO NUL=C:\VOPL3\VOPLCFG.EXE>>C:\WINDOWS\WININIT.INI
 ECHO NUL=C:\VOPL3\VOPL3.INI>>C:\WINDOWS\WININIT.INI
 ECHO NUL=C:\VOPL3\VOPL3NEW.INI>>C:\WINDOWS\WININIT.INI

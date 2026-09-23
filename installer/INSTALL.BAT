@@ -6,8 +6,8 @@ ECHO.
 ECHO   This installer will:
 ECHO     1. install VOPL3.VXD          (loads at boot, traps the AdLib/OPL
 ECHO                                    and/or MPU-401 MIDI ports)
-ECHO     2. install the OPL3 renderer  (C:\VOPL3\VOPLSRV.EXE, autostarts;
-ECHO        you pick one of four OPL3 emulator builds)
+ECHO     2. install the OPL3 renderer  (C:\VOPL3, autostarts; all four OPL3
+ECHO        emulator builds - you pick the one to start with)
 ECHO     3. install the control panel  (C:\VOPL3\VOPLCFG.EXE - MIDI device,
 ECHO        FM volume, status; you choose if it starts with Windows)
 ECHO     4. set up SBEMUL so it leaves the chosen ports alone (digital
@@ -87,38 +87,40 @@ IF EXIST C:\WINDOWS\SYSTEM\VOPL3.VXD GOTO inuse
 COPY VOPL3.VXD C:\WINDOWS\SYSTEM\VOPL3.VXD
 IF NOT EXIST C:\WINDOWS\SYSTEM\VOPL3.VXD GOTO copyerr
 
-ECHO [2/5] Installing the OPL3 renderer to C:\VOPL3 ...
+ECHO [2/5] Installing the OPL3 renderers to C:\VOPL3 ...
 IF NOT EXIST C:\VOPL3\NUL MD C:\VOPL3
-IF EXIST C:\VOPL3\VOPLSRV.EXE ATTRIB -R C:\VOPL3\VOPLSRV.EXE >NUL
-IF EXIST C:\VOPL3\VOPLSRV.EXE DEL C:\VOPL3\VOPLSRV.EXE >NUL
-IF EXIST C:\VOPL3\VOPLSRV.EXE GOTO inuse
+REM All four builds are installed (the control panel switches between them);
+REM the autostart entry (step 4) says which one runs.
+REM (VOPLSRV, VOPLFAST, VOPLDB, VOPLYM; lines kept short for COMMAND.COM)
+FOR %%F IN (SRV FAST DB YM) DO IF EXIST C:\VOPL3\VOPL%%F.EXE ATTRIB -R C:\VOPL3\VOPL%%F.EXE >NUL
+FOR %%F IN (SRV FAST DB YM) DO IF EXIST C:\VOPL3\VOPL%%F.EXE DEL C:\VOPL3\VOPL%%F.EXE >NUL
+FOR %%F IN (SRV FAST DB YM) DO IF EXIST C:\VOPL3\VOPL%%F.EXE GOTO inuse
+FOR %%F IN (SRV FAST DB YM) DO COPY VOPL%%F.EXE C:\VOPL3\VOPL%%F.EXE >NUL
+FOR %%F IN (SRV FAST DB YM) DO IF NOT EXIST C:\VOPL3\VOPL%%F.EXE GOTO copyerr
+REM the licenses of the emulators the renderers contain
+COPY NUKED-OPL3-LICENSE.txt C:\VOPL3 >NUL
+COPY NUKED-OPL3-FAST-LICENSE.txt C:\VOPL3 >NUL
+COPY DBOPL-LICENSE.txt C:\VOPL3 >NUL
+COPY YMFM-LICENSE.txt C:\VOPL3 >NUL
+SET VOPLREN=srv
 REM VOPL3 not playing FM: no synthesis, so the choice of OPL3 emulator doesn't matter
-IF NOT "%VOPLFM%"=="vopl" GOTO copystd
+IF NOT "%VOPLFM%"=="vopl" GOTO rendone
 ECHO.
-ECHO   Four renderer builds are included:
+ECHO   Four OPL3 emulator builds are installed. Which one should run?
+ECHO   (You can switch any time in the VOPL3 control panel.)
 ECHO     1 = Nuked OPL3       (the reference emulator - the most accurate)
 ECHO     2 = Nuked OPL3 fast  (same output as 1, about half the CPU use;
 ECHO                           recommended, especially on slower machines)
 ECHO     3 = DOSBox DBOPL     (DOSBox's emulator: a small fraction of the
 ECHO                           CPU use of 1 or 2, but less accurate)
 ECHO     4 = ymfm             (MAME's emulator: about the CPU use of 2)
-CHOICE /C:1234 Which renderer do you want to install
-IF ERRORLEVEL 4 GOTO copyym
-IF ERRORLEVEL 3 GOTO copydb
-IF ERRORLEVEL 2 GOTO copyfast
-:copystd
-COPY VOPLSRV.EXE C:\VOPL3\VOPLSRV.EXE
-GOTO srvdone
-:copyfast
-COPY VOPLFAST.EXE C:\VOPL3\VOPLSRV.EXE
-GOTO srvdone
-:copydb
-COPY VOPLDB.EXE C:\VOPL3\VOPLSRV.EXE
-GOTO srvdone
-:copyym
-COPY VOPLYM.EXE C:\VOPL3\VOPLSRV.EXE
-:srvdone
-IF NOT EXIST C:\VOPL3\VOPLSRV.EXE GOTO copyerr
+CHOICE /C:1234 Which OPL3 emulator
+IF ERRORLEVEL 4 SET VOPLREN=ym
+IF ERRORLEVEL 4 GOTO rendone
+IF ERRORLEVEL 3 SET VOPLREN=db
+IF ERRORLEVEL 3 GOTO rendone
+IF ERRORLEVEL 2 SET VOPLREN=fast
+:rendone
 IF EXIST C:\VOPL3\VOPL3.INI GOTO inikeep
 COPY VOPL3.INI C:\VOPL3\VOPL3.INI >NUL
 GOTO inidone
@@ -151,14 +153,19 @@ REGEDIT /S VOPLCFG.REG
 
 ECHO [4/5] Registering VOPL3 (boot VxD + renderer autostart + choices) ...
 REM INSTALL.REG sets FM = VOPL3, MIDI = SBEMUL, and SBEMUL's SoftFM=1 (it
-REM leaves its FM ports 388-38B and base+8/+9 alone); the others
-REM override that. FMSBEMUL.REG removes SoftFM again (stock SBEMUL FM).
+REM leaves its FM ports 388-38B and base+8/+9 alone), and autostarts the
+REM Nuked renderer (VOPLSRV.EXE); the others override that. FMSBEMUL.REG
+REM removes SoftFM again (stock SBEMUL FM); RUN*.REG autostart another
+REM renderer build.
 REM Written BEFORE patching, so a failed patch finished by hand later (see
 REM sberr) still finds the choices in place.
 REGEDIT /S INSTALL.REG
 IF "%VOPLFM%"=="sbemul" REGEDIT /S FMSBEMUL.REG
 IF "%VOPLFM%"=="free" REGEDIT /S FMFREE.REG
 IF "%VOPLMIDI%"=="vopl" REGEDIT /S MIDION.REG
+IF "%VOPLREN%"=="fast" REGEDIT /S RUNFAST.REG
+IF "%VOPLREN%"=="db" REGEDIT /S RUNDB.REG
+IF "%VOPLREN%"=="ym" REGEDIT /S RUNYM.REG
 
 ECHO [5/5] Setting up SBEMUL.SYS to leave the chosen ports alone ...
 SBPATCH.EXE C:\WINDOWS\SYSTEM32\DRIVERS\SBEMUL.SYS %VOPLSB%
@@ -172,7 +179,8 @@ IF "%VOPLFM%"=="vopl" ECHO     AdLib (or OPL3)                - played by VOPL3
 IF "%VOPLFM%"=="free" ECHO     AdLib (or OPL3)                - the FM ports are left free
 IF "%VOPLMIDI%"=="vopl" ECHO     General MIDI (MPU-401, 330)    - played by VOPL3
 IF "%VOPLMIDI%"=="sbemul" ECHO     General MIDI (MPU-401, 330)    - played by SBEMUL
-ECHO   The renderer C:\VOPL3\VOPLSRV.EXE starts automatically at login.
+ECHO   The renderer starts automatically at login; to switch OPL3 emulator,
+ECHO   use the VOPL3 control panel (C:\VOPL3\VOPLCFG.EXE).
 IF NOT "%VOPLMIDI%"=="vopl" GOTO end
 ECHO   Pick the MIDI device in the VOPL3 control panel
 ECHO   (C:\VOPL3\VOPLCFG.EXE) - or in the Multimedia control panel or
@@ -199,11 +207,13 @@ GOTO end
 ECHO   ERROR: could not copy files. Run this from the folder that contains
 ECHO   INSTALL.BAT, VOPL3.VXD, VOPLSRV.EXE, VOPLFAST.EXE, VOPLDB.EXE, VOPLYM.EXE,
 ECHO   VOPLCFG.EXE, SBPATCH.EXE, VOPLSTOP.EXE, INSTALL.REG, VOPLCFG.REG,
-ECHO   MIDION.REG, FMSBEMUL.REG and FMFREE.REG.
+ECHO   MIDION.REG, FMSBEMUL.REG, FMFREE.REG, RUNFAST.REG, RUNDB.REG and
+ECHO   RUNYM.REG.
 
 :end
 SET VOPLFM=
 SET VOPLMIDI=
 SET VOPLSB=
+SET VOPLREN=
 ECHO.
 PAUSE

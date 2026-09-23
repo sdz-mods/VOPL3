@@ -19,8 +19,9 @@ INSTALL
   Run INSTALL.BAT from Windows (in an MS-DOS Prompt / DOS box), from the folder
   that contains these files. It:
     - installs VOPL3.VXD (C:\WINDOWS\SYSTEM, loads at boot),
-    - installs the renderer (C:\VOPL3\VOPLSRV.EXE, autostarts at login).
-      If VOPL3 plays FM, you choose between four builds:
+    - installs the renderer (C:\VOPL3, autostarts at login) - all four
+      OPL3 emulator builds. If VOPL3 plays FM, you choose the one to start
+      with (switch any time in the control panel):
         1 = Nuked OPL3 (reference, the most accurate),
         2 = Nuked OPL3 fast (same output as 1, about half the CPU use -
             recommended, especially on slower machines),
@@ -75,6 +76,11 @@ CONTROL PANEL (VOPLCFG.EXE)
   A small tray app for configuring and watching VOPL3 - no reboot needed:
     - pick the MIDI output device and set the FM volume; Apply saves them to
       VOPL3.INI and the running renderer picks them up immediately,
+    - pick the OPL3 emulator; Apply restarts the renderer as that build
+      (and makes it the one that starts with Windows). A game playing FM
+      music at that moment loses the instruments it had loaded, so its music
+      may stay silent or sound wrong until it loads new ones: switch between
+      games, or restart the music,
     - shows engine status (renderer/backend, FM playing/idle, priority,
       MIDI bridge + synth state), driver + renderer revisions, and the same
       debug counters VOPLSTAT prints.
@@ -168,6 +174,8 @@ FILES
   MIDION.REG                    MIDI = VOPL3      (applied if chosen)
   FMSBEMUL.REG                  FM = SBEMUL, SoftFM removed (applied if chosen)
   FMFREE.REG                    FM = left free    (applied if chosen)
+  RUNFAST.REG / RUNDB.REG /     start Nuked-fast / DBOPL / ymfm instead of
+  RUNYM.REG                     Nuked OPL3 (applied if chosen)
   VOPLCFG.REG                   control-panel autostart (applied if chosen)
   SBPATCH.EXE                   the SBEMUL.SYS patcher
   MIDILIST.EXE                  lists MIDI output devices (for MIDI = VOPL3)
@@ -179,7 +187,7 @@ FILES
                                 with VOPL3's, at the project's GitHub page)
   VOPLYM.EXE                    renderer, ymfm backend (BSD 3-clause - see
                                 YMFM-LICENSE.txt)
-                                (the one you pick is installed as VOPLSRV.EXE)
+                                (all four are installed; you pick which runs)
   VOPLCFG.EXE                   control panel / tray app (see above)
   VOPLSTOP.EXE                  stops the running renderer/control panel
                                 (used by INSTALL.BAT on reinstall)

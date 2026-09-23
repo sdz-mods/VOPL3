@@ -52,7 +52,7 @@ try {
     Remove-Item MIDILIST.OBJ -ErrorAction SilentlyContinue
 
     # 3. copy the runtime text files, normalised to CRLF for DOS
-    foreach ($t in 'INSTALL.BAT','UNINSTALL.BAT','INSTALL.REG','UNINSTALL.REG','MIDION.REG','FMSBEMUL.REG','FMFREE.REG','VOPLCFG.REG','README.TXT','VOPL3.INI') {
+    foreach ($t in 'INSTALL.BAT','UNINSTALL.BAT','INSTALL.REG','UNINSTALL.REG','MIDION.REG','FMSBEMUL.REG','FMFREE.REG','RUNFAST.REG','RUNDB.REG','RUNYM.REG','VOPLCFG.REG','README.TXT','VOPL3.INI') {
         $src = Join-Path $PSScriptRoot $t
         $dst = Join-Path $dist $t
         $c = ([IO.File]::ReadAllText($src) -replace "`r`n","`n") -replace "`n","`r`n"
