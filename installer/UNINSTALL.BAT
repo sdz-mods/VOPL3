@@ -15,7 +15,9 @@ DEL C:\WINDOWS\SYSTEM32\DRIVERS\SBEMUL.SYS.orig
 :nosbrestore
 
 ECHO Removing registry entries ...
-REGEDIT /S UNINSTALL.REG
+REM Run from the package folder, or from the copy installed in C:\VOPL3.
+IF EXIST UNINSTALL.REG REGEDIT /S UNINSTALL.REG
+IF NOT EXIST UNINSTALL.REG REGEDIT /S C:\VOPL3\UNINSTALL.REG
 
 ECHO Removing the license texts ...
 REM Not in use, so deleted now - and WININIT.INI below can't take their long
@@ -37,4 +39,7 @@ ECHO NUL=C:\VOPL3\VOPL3NEW.INI>>C:\WINDOWS\WININIT.INI
 
 ECHO.
 ECHO   Done. Reboot to complete removal.
+ECHO   Afterwards C:\VOPL3 holds nothing but this uninstaller (a running
+ECHO   batch file cannot delete itself) - remove the folder if you want
+ECHO   it gone.
 PAUSE

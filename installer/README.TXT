@@ -152,6 +152,10 @@ MIDI (if you chose MIDI = VOPL3 at install)
 
 UNINSTALL
   Run UNINSTALL.BAT (restores the original SBEMUL.SYS, removes VOPL3), reboot.
+  A copy is installed as C:\VOPL3\UNINSTALL.BAT, so removing VOPL3 later
+  does not need this package. A running batch file cannot delete itself, so
+  after the reboot C:\VOPL3 holds only the uninstaller - remove the folder
+  by hand if you want it gone.
 
 ABOUT THE SBEMUL PATCH
   SBEMUL claims its FM ports only to fake AdLib *detection* - it makes no FM

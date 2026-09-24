@@ -102,6 +102,10 @@ COPY NUKED-OPL3-LICENSE.txt C:\VOPL3 >NUL
 COPY NUKED-OPL3-FAST-LICENSE.txt C:\VOPL3 >NUL
 COPY DBOPL-LICENSE.txt C:\VOPL3 >NUL
 COPY YMFM-LICENSE.txt C:\VOPL3 >NUL
+REM The uninstaller goes in with the install, so VOPL3 can be removed later
+REM without hunting down this package again.
+COPY UNINSTALL.BAT C:\VOPL3 >NUL
+COPY UNINSTALL.REG C:\VOPL3 >NUL
 SET VOPLREN=srv
 REM VOPL3 not playing FM: no synthesis, so the choice of OPL3 emulator doesn't matter
 IF NOT "%VOPLFM%"=="vopl" GOTO rendone
@@ -181,6 +185,7 @@ IF "%VOPLMIDI%"=="vopl" ECHO     General MIDI (MPU-401, 330)    - played by VOPL
 IF "%VOPLMIDI%"=="sbemul" ECHO     General MIDI (MPU-401, 330)    - played by SBEMUL
 ECHO   The renderer starts automatically at login; to switch OPL3 emulator,
 ECHO   use the VOPL3 control panel (C:\VOPL3\VOPLCFG.EXE).
+ECHO   To remove VOPL3 later, run C:\VOPL3\UNINSTALL.BAT.
 IF NOT "%VOPLMIDI%"=="vopl" GOTO end
 ECHO   Pick the MIDI device in the VOPL3 control panel
 ECHO   (C:\VOPL3\VOPLCFG.EXE) - or in the Multimedia control panel or

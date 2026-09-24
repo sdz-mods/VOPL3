@@ -309,8 +309,9 @@ BUILD.md     build prerequisites and step-by-step
   choices** above), and sets up SBEMUL accordingly (`SoftFM`, `SBEMUL.SYS`
   patch). Reboot. In your DOS
   game set **Music = AdLib/OPL3** or **General MIDI** and **Sound FX = Sound
-  Blaster**. `UNINSTALL.BAT`
-  restores the original SBEMUL and removes VOPL3.
+  Blaster**. `UNINSTALL.BAT` restores the original SBEMUL and removes VOPL3;
+  a copy of it is installed to `C:\VOPL3`, so removing VOPL3 later does not
+  need the package.
 
 ## Status
 
