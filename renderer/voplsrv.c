@@ -91,6 +91,8 @@ static HANDLE    hev;              /* waveOut buffer-completion event         */
 static DWORD     idleclose_ms;     /* [renderer] idleclose=; 0 = never close  */
 static UINT      timer_res = 5;    /* [renderer] timerres=; ms, see load_timerres */
 static int       out_closed;       /* output device released while FM idle    */
+static char      wave_name[MAXPNAMELEN];  /* [renderer] device=; "" = mapper  */
+static UINT      wave_cur = VOPL3_OUT_NONE;  /* device the last open got      */
 
 static HMIDIOUT  hmidi;            /* MPU-401 MIDI output, open only while used */
 static UINT      midi_dev = (UINT)MIDI_MAPPER;  /* device id; set from INI  */
@@ -300,6 +302,18 @@ static void load_settings(void)
      * control-panel choice); 0,1,2,... = a specific midiOut device index. */
     { UINT d = GetPrivateProfileInt("midi", "device", 0xFFFF, ini);
       midi_dev = (d == 0xFFFF) ? (UINT)MIDI_MAPPER : d; }
+
+    /* [renderer] device=<sound card name>: which waveOut device the FM plays
+     * on. Empty (the default) means the wave mapper, i.e. whatever Windows
+     * uses for preferred playback. Stored as the device's NAME rather than
+     * its index: indices shift when a card is added or removed, a name does
+     * not. It is resolved at every open (wave_dev_index), so a card that
+     * isn't installed any more simply falls back to the mapper.
+     * Applies live on a control-panel reload - see wndproc, which reopens the
+     * device. This is the FM's output only: DOS MIDI goes to the device
+     * [midi] device= above names. */
+    GetPrivateProfileString("renderer", "device", "", wave_name,
+                            sizeof(wave_name), ini);
 
     /* [renderer] buffer=<total ms> (default 160, clamped 40-960): deeper
      * buffering rides out sound drivers that deliver buffer completions
@@ -524,6 +538,7 @@ static void status_publish(int active)
     g_stat->realtime   = realtime;
     g_stat->active     = active;
     g_stat->out_open   = hwo ? 1 : 0;
+    g_stat->out_dev    = wave_cur;
     g_stat->volume     = volume_pct;
     g_stat->midi_bytes = midi_total;
     g_stat->frames++;
@@ -673,9 +688,26 @@ static int buf_silent(const short *p, int n)
  * shutdown.The MIDI synth is deliberately untouched by
  * either: it is a different device with its own lifecycle (see service_midi),
  * and FM idle says nothing about whether MIDI is flowing. */
+/* The waveOut device [renderer] device= names, or WAVE_MAPPER when it names
+ * nothing (the default) or names a device that is not installed. */
+static UINT wave_dev_index(void)
+{
+    WAVEOUTCAPS woc;
+    UINT n, i;
+
+    if (!wave_name[0]) return (UINT)WAVE_MAPPER;
+    n = waveOutGetNumDevs();
+    for (i = 0; i < n; i++)
+        if (waveOutGetDevCaps(i, &woc, sizeof(woc)) == MMSYSERR_NOERROR &&
+                !lstrcmpi(woc.szPname, wave_name))
+            return i;
+    return (UINT)WAVE_MAPPER;
+}
+
 static int audio_open(void)
 {
     WAVEFORMATEX wf;
+    UINT dev;
     int i;
 
     if (hwo) return 1;
@@ -688,11 +720,21 @@ static int audio_open(void)
     wf.nAvgBytesPerSec = rate * 4;
     wf.cbSize          = 0;
 
-    if (waveOutOpen(&hwo, WAVE_MAPPER, &wf, (DWORD)hev, 0, CALLBACK_EVENT)
+    /* A named device can be busy with another program, or refuse a rate= the
+     * mapper would have converted for us. No sound at all is the worse
+     * outcome, so fall back to the mapper instead of failing. */
+    dev = wave_dev_index();
+    if (waveOutOpen(&hwo, dev, &wf, (DWORD)hev, 0, CALLBACK_EVENT)
             != MMSYSERR_NOERROR) {
-        hwo = NULL;
-        return 0;
+        if (dev == (UINT)WAVE_MAPPER ||
+            waveOutOpen(&hwo, WAVE_MAPPER, &wf, (DWORD)hev, 0, CALLBACK_EVENT)
+                != MMSYSERR_NOERROR) {
+            hwo = NULL;
+            return 0;
+        }
+        dev = (UINT)WAVE_MAPPER;
     }
+    wave_cur = dev;                        /* published: what we play on */
 
     /* prime all buffers */
     for (i = 0; i < nbuf; i++) {
@@ -756,11 +798,26 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
      * variables, not switch cases). */
     if (g_msg_reload && msg == g_msg_reload) {
         UINT olddev = midi_dev;
+        char oldwave[MAXPNAMELEN];
+        lstrcpyn(oldwave, wave_name, sizeof(oldwave));
         load_settings();                 /* re-read VOPL3.INI: volume + device */
         /* Volume applies instantly (gain256 is read live per buffer). If the
          * MIDI device changed while the synth is open, release it so the next
          * MIDI byte reopens on the newly chosen device - no restart needed. */
         if (hmidi && midi_dev != olddev) midi_close();
+        /* The FM output device can only be changed by reopening the stream.
+         * Release it here and hand the reopen to the loop's idleclose= path,
+         * which already knows how to take the device back (including retrying
+         * a device that is momentarily busy) and re-anchors the timing of the
+         * first writes after the gap - hence anch_ok. A release that fails
+         * (a buffer still queued) leaves us playing on the old device and is
+         * picked up the next time the user applies. */
+        if (hwo && lstrcmpi(wave_name, oldwave)) {
+            if (audio_release()) {
+                out_closed = 1;
+                anch_ok    = 0;
+            }
+        }
         return 0;
     }
     if (g_msg_panic && msg == g_msg_panic) {

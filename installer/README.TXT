@@ -76,8 +76,9 @@ CHOICES (asked by INSTALL.BAT)
 
 CONTROL PANEL (VOPLCFG.EXE)
   A small tray app for configuring and watching VOPL3 - no reboot needed:
-    - pick the MIDI output device and set the FM volume; Apply saves them to
-      VOPL3.INI and the running renderer picks them up immediately,
+    - pick the MIDI output device, pick the sound device the FM plays on and
+      set the FM volume; Apply saves them to VOPL3.INI and the running
+      renderer picks them up immediately,
     - pick the OPL3 emulator; Apply restarts the renderer as that build
       (and makes it the one that starts with Windows). A game playing FM
       music at that moment loses the instruments it had loaded, so its music
@@ -95,6 +96,14 @@ FM VOLUME
   live). It is stored in C:\VOPL3\VOPL3.INI (volume=<percent>, default 200,
   max 400). 100 is the OPL3 chip's authentic digital level, which sounds
   quiet next to SBEMUL's digital sound.
+
+SOUND OUTPUT DEVICE
+  With more than one sound card in the machine, the control panel picks which
+  one the FM plays on (Apply reopens the output right away). This covers the
+  FM only - DOS MIDI goes wherever the MIDI output device points (see MIDI
+  below). It is stored in VOPL3.INI by name (device=<sound card>, empty =
+  whatever Windows plays on); a card that is no longer installed falls back to
+  the default device rather than leaving the FM silent.
 
 TUNING (advanced - C:\VOPL3\VOPL3.INI, see the comments in the file)
   buffer=<ms>     audio buffering depth, default 160 (range 40-960). Raise

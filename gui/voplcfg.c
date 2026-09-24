@@ -4,6 +4,7 @@
  * into the package's two functions:
  *   Virtual OPL3       - FM volume (applied LIVE, no restart), which OPL3
  *                        emulator runs (switched by restarting the renderer),
+ *                        which sound device it plays on (applied LIVE),
  *                        renderer/backend/FM/priority status, OPL3 debug
  *                        counters;
  *   MPU-401 MIDI bridge- MIDI output device selection (applied LIVE),
@@ -41,11 +42,11 @@
 #define STALE_MS  3000              /* renderer status older than this = stopped */
 
 enum {
-    ID_DEV = 1001, ID_VOL, ID_VOLTXT, ID_APPLY, ID_EMU,
+    ID_DEV = 1001, ID_VOL, ID_VOLTXT, ID_APPLY, ID_EMU, ID_OUT,
     ID_TRAY_OPEN, ID_TRAY_EXIT
 };
 
-static HWND   g_hwnd, g_dev, g_vol, g_voltxt, g_msg, g_emu;
+static HWND   g_hwnd, g_dev, g_vol, g_voltxt, g_msg, g_emu, g_out;
 static HWND   g_opl_l1, g_opl_l2, g_opl_s1, g_opl_s2;   /* OPL3 status/stats */
 static HWND   g_mid_l1, g_mid_s1;                       /* MIDI status/stats */
 static HWND   g_rev;                                    /* bottom revisions  */
@@ -129,8 +130,11 @@ static VOPL3_STATUS *rstat(void)
 {
     if (!g_rs) {
         g_map = OpenFileMapping(FILE_MAP_READ, FALSE, VOPL3_STATUS_NAME);
-        if (g_map) g_rs = (VOPL3_STATUS *)MapViewOfFile(g_map, FILE_MAP_READ, 0, 0,
-                                                        sizeof(VOPL3_STATUS));
+        /* map the WHOLE section, not sizeof(VOPL3_STATUS): the struct grows
+         * with the status version (ver 4 appended out_dev), and asking for
+         * more than the renderer created would fail outright. Fields past
+         * the ver they arrived in are read only after checking ver. */
+        if (g_map) g_rs = (VOPL3_STATUS *)MapViewOfFile(g_map, FILE_MAP_READ, 0, 0, 0);
     }
     if (g_rs && g_rs->magic == VOPL3_STATUS_MAGIC) return g_rs;
     return NULL;
@@ -268,6 +272,87 @@ static void switch_emulator(int i)
     SetWindowText(g_msg, line);
 }
 
+/* -------------------------------------------------------- sound output list */
+/* Which sound device the FM plays on, stored in VOPL3.INI by NAME
+ * ([renderer] device=) - waveOut indices move when a card is added or removed,
+ * names don't. Combo item 0 = the wave mapper (empty INI value: whatever
+ * Windows plays on); every other item's text IS the value written.
+ *
+ * The renderer can end up on a DIFFERENT device than the one named: a card
+ * that isn't installed any more, or one that won't open (busy, or refusing
+ * the rate), falls back to the mapper rather than leaving the FM silent. It
+ * publishes what it really opened (status out_dev), and the chosen item then
+ * carries that as a marker - one entry, telling both what you picked and what
+ * it is actually playing on, instead of a second device shown elsewhere.
+ * Since the marker is part of the item text, the marked item's real value is
+ * kept aside here for Apply to write.
+ *
+ * Greyed out when VOPL3 doesn't play FM: nothing is synthesized then, so
+ * there is no output to place. */
+static char  g_out_mark[MAXPNAMELEN];  /* real INI value of the marked item  */
+static int   g_out_mark_idx = -1;      /* the marked item, or -1             */
+static int   g_out_sel      = -1;      /* selection fill_outputs last made,
+                                        * so a refill never eats a pick the
+                                        * user hasn't applied yet            */
+static DWORD g_out_actual   = VOPL3_OUT_NONE;   /* renderer's out_dev        */
+
+/* name of a waveOut device for display (out[MAXPNAMELEN]) */
+static void out_devname(DWORD dev, char *out)
+{
+    WAVEOUTCAPS woc;
+    if (dev == VOPL3_OUT_MAPPER) { lstrcpy(out, "the Wave Mapper"); return; }
+    if (waveOutGetDevCaps(dev, &woc, sizeof(woc)) == MMSYSERR_NOERROR)
+        lstrcpyn(out, woc.szPname, MAXPNAMELEN);
+    else
+        sprintf(out, "device %u", (unsigned)dev);
+}
+
+static void fill_outputs(void)
+{
+    char cur[MAXPNAMELEN], act[MAXPNAMELEN], line[160];
+    UINT n = waveOutGetNumDevs(), i;
+    int  sel = 0;
+
+    GetPrivateProfileString("renderer", "device", "", cur, sizeof(cur), g_ini);
+    g_out_mark[0]  = 0;
+    g_out_mark_idx = -1;
+    SendMessage(g_out, CB_RESETCONTENT, 0, 0);
+    SendMessage(g_out, CB_ADDSTRING, 0, (LPARAM)"Wave Mapper (Windows default)");
+    for (i = 0; i < n; i++) {
+        char name[MAXPNAMELEN];
+        WAVEOUTCAPS woc;
+        if (waveOutGetDevCaps(i, &woc, sizeof(woc)) == MMSYSERR_NOERROR)
+            lstrcpyn(name, woc.szPname, sizeof(name));
+        else
+            sprintf(name, "device %u", i);
+        lstrcpy(line, name);
+        if (cur[0] && !lstrcmpi(name, cur)) {
+            sel = (int)i + 1;
+            if (g_out_actual != VOPL3_OUT_NONE && g_out_actual != (DWORD)i) {
+                out_devname(g_out_actual, act);
+                sprintf(line, "%s  (unavailable - playing on %s)", name, act);
+                lstrcpy(g_out_mark, name);
+                g_out_mark_idx = sel;
+            }
+        }
+        SendMessage(g_out, CB_ADDSTRING, 0, (LPARAM)line);
+    }
+    if (cur[0] && !sel) {                  /* named card is not installed */
+        if (g_out_actual != VOPL3_OUT_NONE) {
+            out_devname(g_out_actual, act);
+            sprintf(line, "%s  (not installed - playing on %s)", cur, act);
+        } else {
+            sprintf(line, "%s  (not installed)", cur);
+        }
+        sel = (int)SendMessage(g_out, CB_ADDSTRING, 0, (LPARAM)line);
+        lstrcpy(g_out_mark, cur);
+        g_out_mark_idx = sel;
+    }
+    SendMessage(g_out, CB_SETCURSEL, sel, 0);
+    g_out_sel = sel;
+    EnableWindow(g_out, fm_is_ours());
+}
+
 /* ---------------------------------------------------------------- MIDI list */
 /* Combo item 0 = MIDI Mapper (INI value 65535); items 1.. = device index-1. */
 static void fill_devices(void)
@@ -340,6 +425,21 @@ static void apply_settings(void)
     sprintf(num, "%d", dev); WritePrivateProfileString("midi", "device", num, g_ini);
     sprintf(num, "%d", vol); WritePrivateProfileString("renderer", "volume", num, g_ini);
 
+    /* FM output device: the item's text is the value, except for a marked
+     * item, whose real name is kept aside (see fill_outputs). The renderer
+     * reopens the output on the reload below - no restart. */
+    {
+        int  s = (int)SendMessage(g_out, CB_GETCURSEL, 0, 0);
+        char name[160];
+        name[0] = 0;
+        if (s == g_out_mark_idx && g_out_mark[0])
+            lstrcpyn(name, g_out_mark, MAXPNAMELEN);
+        else if (s > 0)
+            SendMessage(g_out, CB_GETLBTEXT, s, (LPARAM)name);
+        WritePrivateProfileString("renderer", "device", name, g_ini);
+        g_out_sel = s;             /* applied: this is the INI's choice now */
+    }
+
     /* a different OPL3 emulator: restart the renderer as that build (it
      * reads the INI just saved as it starts) */
     if (IsWindowEnabled(g_emu)) {
@@ -400,6 +500,20 @@ static void refresh(void)
 
     sprintf(line, "I/O:   writes=%u  nonbyte=%u", (unsigned)st[3], (unsigned)st[4]);
     upd(g_opl_s2, g_p_opl_s2, sizeof(g_p_opl_s2), line);
+
+    /* The device the renderer really opened. When it isn't the one chosen
+     * (card gone, or it wouldn't open), the list says so on the chosen entry
+     * - rebuild it whenever that changes, but never while the list is open or
+     * while it holds a selection the user hasn't applied yet. */
+    {
+        DWORD od = (live && s->ver >= 4) ? s->out_dev : VOPL3_OUT_NONE;
+        if (od != g_out_actual) {
+            g_out_actual = od;
+            if (!SendMessage(g_out, CB_GETDROPPEDSTATE, 0, 0) &&
+                    (int)SendMessage(g_out, CB_GETCURSEL, 0, 0) == g_out_sel)
+                fill_outputs();
+        }
+    }
 
     /* --- MPU-401 MIDI bridge section --- */
     /* Priority is process-wide (one renderer), raised by FM OR MIDI activity;
@@ -476,7 +590,7 @@ static void build_ui(HWND w)
     int ax_midi = 20 + textw("ports 330-331 ");
 
     /* ============ Virtual OPL3 ============ */
-    mk(w, "BUTTON", "Virtual OPL3", BS_GROUPBOX, 8, 6, 388, 254, 0);
+    mk(w, "BUTTON", "Virtual OPL3", BS_GROUPBOX, 8, 6, 388, 282, 0);
     mk(w, "STATIC", "ports 388-38B, 2x8/2x9 -> VXD trap -> renderer (OPL3 emulator)",
        0, 20, 26, 368, 18, 0);
     mk(w, "STATIC", "-> waveOut -> KMIXER -> sound card",
@@ -493,43 +607,51 @@ static void build_ui(HWND w)
     SendMessage(g_vol, TBM_SETRANGE, TRUE, MAKELONG(0, 400));
     SendMessage(g_vol, TBM_SETTICFREQ, 50, 0);
 
-    {   /* label sized in the real font, the list takes the rest of the row */
-        int lw = textw("OPL3 emulator:") + 2;
+    {   /* labels sized in the real font; both lists start past the wider of
+         * the two, so the two rows line up, and take the rest of the row */
+        int lw = textw("OPL3 emulator:");
+        int sw = textw("Sound output:");
+        if (sw > lw) lw = sw;
+        lw += 2;
         mk(w, "STATIC", "OPL3 emulator:", 0, 20, 148, lw, 18, 0);
         g_emu = mk(w, "COMBOBOX", "", WS_BORDER | WS_VSCROLL | CBS_DROPDOWNLIST | WS_TABSTOP,
                    26 + lw, 144, 362 - lw, 200, ID_EMU);
+        mk(w, "STATIC", "Sound output:", 0, 20, 176, lw, 18, 0);
+        g_out = mk(w, "COMBOBOX", "", WS_BORDER | WS_VSCROLL | CBS_DROPDOWNLIST | WS_TABSTOP,
+                   26 + lw, 172, 362 - lw, 200, ID_OUT);
     }
 
-    g_opl_l1 = mk(w, "STATIC", "", 0, 20, 176, 368, 18, 0);
-    g_opl_l2 = mk(w, "STATIC", "", 0, 20, 194, 368, 18, 0);
-    g_opl_s1 = mk(w, "STATIC", "", 0, 20, 216, 368, 18, 0);
-    g_opl_s2 = mk(w, "STATIC", "", 0, 20, 234, 368, 18, 0);
+    g_opl_l1 = mk(w, "STATIC", "", 0, 20, 204, 368, 18, 0);
+    g_opl_l2 = mk(w, "STATIC", "", 0, 20, 222, 368, 18, 0);
+    g_opl_s1 = mk(w, "STATIC", "", 0, 20, 244, 368, 18, 0);
+    g_opl_s2 = mk(w, "STATIC", "", 0, 20, 262, 368, 18, 0);
 
     /* ============ MPU-401 MIDI bridge ============ */
-    mk(w, "BUTTON", "MPU-401 MIDI bridge", BS_GROUPBOX, 8, 268, 388, 196, 0);
+    mk(w, "BUTTON", "MPU-401 MIDI bridge", BS_GROUPBOX, 8, 296, 388, 196, 0);
     mk(w, "STATIC", "ports 330-331 -> VXD trap -> renderer (MIDI parser)",
-       0, 20, 288, 368, 18, 0);
+       0, 20, 316, 368, 18, 0);
     mk(w, "STATIC", "-> midiOut -> any installed MIDI device",
-       0, ax_midi, 306, 388 - ax_midi, 18, 0);
+       0, ax_midi, 334, 388 - ax_midi, 18, 0);
     mk(w, "STATIC", "Bridges MIDI from DOS programs only;",
-       0, 20, 330, 368, 18, 0);
+       0, 20, 358, 368, 18, 0);
     mk(w, "STATIC", "Windows MIDI applications are unaffected.",
-       0, 20, 348, 368, 18, 0);
+       0, 20, 376, 368, 18, 0);
 
-    mk(w, "STATIC", "MIDI output device:", 0, 20, 372, 200, 18, 0);
+    mk(w, "STATIC", "MIDI output device:", 0, 20, 400, 200, 18, 0);
     g_dev = mk(w, "COMBOBOX", "", WS_BORDER | WS_VSCROLL | CBS_DROPDOWNLIST | WS_TABSTOP,
-               20, 390, 368, 200, ID_DEV);
+               20, 418, 368, 200, ID_DEV);
 
-    g_mid_l1 = mk(w, "STATIC", "", 0, 20, 420, 368, 18, 0);
-    g_mid_s1 = mk(w, "STATIC", "", 0, 20, 438, 368, 18, 0);
+    g_mid_l1 = mk(w, "STATIC", "", 0, 20, 448, 368, 18, 0);
+    g_mid_s1 = mk(w, "STATIC", "", 0, 20, 466, 368, 18, 0);
 
     /* ============ bottom ============ */
-    mk(w, "BUTTON", "Apply", 0, 157, 472, 90, 26, ID_APPLY);
-    g_msg = mk(w, "STATIC", "", 0, 20, 504, 368, 18, 0);
-    mk(w, "STATIC", "", SS_ETCHEDHORZ, 8, 526, 388, 2, 0);
-    g_rev = mk(w, "STATIC", "", 0, 20, 534, 368, 18, 0);
+    mk(w, "BUTTON", "Apply", 0, 157, 500, 90, 26, ID_APPLY);
+    g_msg = mk(w, "STATIC", "", 0, 20, 532, 368, 18, 0);
+    mk(w, "STATIC", "", SS_ETCHEDHORZ, 8, 554, 388, 2, 0);
+    g_rev = mk(w, "STATIC", "", 0, 20, 562, 368, 18, 0);
 
     fill_devices();
+    fill_outputs();
     {
         VOPL3_STATUS *s = rstat();
         fill_emulators(s, renderer_live(s));
@@ -577,6 +699,25 @@ static LRESULT CALLBACK WndProc(HWND w, UINT m, WPARAM wp, LPARAM lp)
                 fill_devices();
                 if (sel > 0 && sel < (int)SendMessage(g_dev, CB_GETCOUNT, 0, 0))
                     SendMessage(g_dev, CB_SETCURSEL, sel, 0);
+            }
+            return 0;
+        case ID_OUT:
+            /* same for the sound output list; here the selection is a NAME,
+             * so keep it by name - a device that appeared or went away in the
+             * meantime shifts the indices */
+            if (HIWORD(wp) == CBN_DROPDOWN) {
+                char sel[MAXPNAMELEN + 24];
+                int  s = (int)SendMessage(g_out, CB_GETCURSEL, 0, 0), i;
+                sel[0] = 0;
+                if (s > 0) SendMessage(g_out, CB_GETLBTEXT, s, (LPARAM)sel);
+                fill_outputs();
+                if (s == 0) {
+                    SendMessage(g_out, CB_SETCURSEL, 0, 0);
+                } else if (sel[0]) {
+                    i = (int)SendMessage(g_out, CB_FINDSTRINGEXACT, (WPARAM)-1,
+                                         (LPARAM)sel);
+                    if (i != CB_ERR) SendMessage(g_out, CB_SETCURSEL, i, 0);
+                }
             }
             return 0;
         }
@@ -647,7 +788,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
 
     {
         DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-        RECT rc = { 0, 0, 404, 558 };
+        RECT rc = { 0, 0, 404, 586 };
         AdjustWindowRect(&rc, style, FALSE);
         w = CreateWindow("VOPLCFG", APP_TITLE, style, CW_USEDEFAULT, CW_USEDEFAULT,
                          rc.right - rc.left, rc.bottom - rc.top, NULL, NULL, hInst, NULL);

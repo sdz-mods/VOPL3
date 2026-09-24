@@ -204,6 +204,13 @@ An optional Win32 **system-tray app** installed alongside the renderer:
 - **MIDI output device** and **FM volume**, applied **live** — Apply writes
   `C:\VOPL3\VOPL3.INI` (so everything works identically with no GUI running)
   and pokes the running renderer to re-read it; no reboot, no restart.
+- **Sound output device** for the FM, also applied **live** (the renderer
+  reopens the output on the chosen card). This is the FM's own output, so on
+  a machine with more than one card it can play on a different one than
+  Windows uses by default; where DOS MIDI goes is a separate choice (see
+  above). It is stored by name, not by index, so it survives cards being
+  added or removed; a card that is no longer installed falls back to the
+  Windows default instead of leaving the FM silent.
 - **OPL3 emulator**: pick one of the four builds and Apply — the renderer is
   restarted as that build (and becomes the one that starts with Windows); no
   reboot. The new renderer starts with a fresh chip, so a game playing FM

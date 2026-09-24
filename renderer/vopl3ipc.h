@@ -42,9 +42,17 @@
 /* --- renderer status shared memory ---------------------------------------- */
 #define VOPL3_STATUS_NAME  "VOPL3_STATUS"
 #define VOPL3_STATUS_MAGIC 0x33504F56u   /* 'VOP3' little-endian */
-#define VOPL3_STATUS_VER   3   /* 2: out_open claimed from reserved[0]
+#define VOPL3_STATUS_VER   4   /* 2: out_open claimed from reserved[0]
                                 * 3: fm_mode and rate claimed from the
-                                *    last two reserved words */
+                                *    last two reserved words
+                                * 4: out_dev appended - the first version to
+                                *    GROW the struct, so a reader must map the
+                                *    whole section (not sizeof) and check ver
+                                *    before touching fields past rate */
+
+/* out_dev values that are not a device index */
+#define VOPL3_OUT_MAPPER   0xFFFFFFFFu   /* the wave mapper (= WAVE_MAPPER) */
+#define VOPL3_OUT_NONE     0xFFFFFFFEu   /* nothing opened (yet)            */
 
 /* --- renderer control (window messages to the "VOPLSRV" window) ------------
  * Values are obtained at runtime via RegisterWindowMessage(name) on both
@@ -80,6 +88,14 @@ typedef struct {
     DWORD fm_mode;      /* registry Fm at this launch: 1 = VOPL3 plays FM,
                          * 0 = FM left to SBEMUL, 2 = ports left free   */
     DWORD rate;         /* output sample rate in use (0 = not reported)  */
+    DWORD out_dev;      /* waveOut device the FM actually plays on: an
+                         * index, VOPL3_OUT_MAPPER, or VOPL3_OUT_NONE. Set
+                         * by the last successful open and kept while the
+                         * device is released, so it answers "which card is
+                         * this playing on" - which is not always the one
+                         * [renderer] device= names (see wave_dev_index and
+                         * audio_open: a name nothing answers to, or a card
+                         * that won't open, falls back to the mapper).   */
 } VOPL3_STATUS;
 #endif
 
