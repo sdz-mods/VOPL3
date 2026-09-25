@@ -653,7 +653,7 @@ static DWORD sys_vm_handle(void)
 /* VxD revision reported by STAT out[9]: up to 4 ASCII chars, little-endian,
  * printed as a string by readers. Keep in sync with vopl3ipc.h VOPL3_REV
  * (kept literal here so the VxD's minimal build needs no extra include). */
-#define VOPL3_VXD_REV 0x00373041        /* "A07" */
+#define VOPL3_VXD_REV 0x00383041        /* "A08" */
 
 DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params)
 {
