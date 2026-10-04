@@ -148,7 +148,41 @@ MIDI (if you chose MIDI = VOPL3 at install)
       C:\VOPL3\VOPL3.INI  [midi] device=  (65535 = MIDI Mapper (default), or a
       device index). Run MIDILIST.EXE to list devices and their indices.
     - This replaces SBEMUL's MIDI; with MIDI = SBEMUL it is left untouched.
-    - Only UART-mode MPU-401 is supported.
+
+MPU-401 INTELLIGENT MODE (on by default, no interrupt)
+  Every General MIDI game from about 1991 on drives the MPU-401 in its simple
+  "UART" mode, which VOPL3 has always emulated. Some older titles - Sierra's
+  SCI era and its contemporaries, usually with an MT-32 - never switch to
+  UART and talk to the card in intelligent mode instead; they are SILENT
+  without it. VOPL3 emulates that too, and does so out of the box.
+
+    [midi]
+    intelligent=1     1 = also emulate the card's sequencer (the default)
+                      0 = UART only, exactly as releases before A09
+    irq=0             0 = answer and keep time, but never interrupt (default)
+                      3-15 = also raise that interrupt
+
+  Why no interrupt by default: taking an interrupt line is not free. While
+  VOPL3 holds one, real interrupts on it are acknowledged and discarded
+  instead of reaching whoever was using them.
+  ONLY SET THIS TO A LINE NOTHING ELSE USES. Windows will hand over an IRQ
+  one of its own drivers is using: setting 7 on a machine whose HD-Audio is
+  there hangs the boot. VOPL3 refuses a line that looks busy and stays
+  polled - but that check only sees what the interrupt controller shows at
+
+  The IRQ, when you use one, MUST match what the game is configured for, and
+  it cannot be 2: Windows does not hand out the cascade line, and the BIOS
+  redirection that makes a card jumpered to "IRQ 2" work on real hardware
+  does not happen inside a DOS box. Set the game to 9 instead.
+
+  intelligent= takes effect when the renderer next starts; irq= needs a
+  reboot, because the interrupt is claimed for the whole Windows session.
+
+  To see which way a game actually drives the card - they differ, and sound
+  alone does not tell you - set [gui] mpulog=1 and leave the control panel
+  running (the tray is fine). It writes C:\VOPL3\VOPLMPU.LOG: the mode, the
+  commands the game sends, and whether the card's own sequencer is being
+  used. The same line is shown in the control panel window.
 
 UNINSTALL
   Run UNINSTALL.BAT (restores the original SBEMUL.SYS, removes VOPL3), reboot.

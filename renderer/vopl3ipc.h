@@ -31,13 +31,45 @@
 
 /* --- VxD ioctl the GUI reads directly (mirror of the VxD's private define) - */
 #ifndef IOCTL_VOPL3_STAT
-#define IOCTL_VOPL3_STAT 0x1001    /* out: up to 40 bytes, see layout below */
+#define IOCTL_VOPL3_STAT 0x1001    /* out: up to 48 bytes, see layout below */
 #endif
 /* STAT DWORD layout (bytes returned grows with the out buffer you pass):
  *   [0] ring_head  [1] ring_tail  [2] ring_lost                (>=12 bytes)
  *   [3] fm_writes  [4] fm_nonbyte                              (>=20)
  *   [5] midi_head  [6] midi_tail  [7] midi_lost  [8] mpu_uart  (>=36)
- *   [9] vxd_rev (packed, as above)                             (>=40) */
+ *   [9] vxd_rev (packed, as above)                             (>=40)
+ *   [10] OPL status-port reads  [11] reserved               (>=48)
+ *   [12] trap_mask  [13] MPU intelligent-mode commands         (>=56)
+ *   [14] MPU state (VOPL3_MPU_* below)  [15] interrupts raised
+ *   [16] data requests  [17] polled status reads               (>=72)
+ *   [18..25] the first 32 MPU commands a game sent, as bytes
+ *   [26..29] the last 16, ringed by [31] & 15
+ *   [30] how many of the first are filled  [31] commands total (>=128) */
+
+/* STAT[14]: which MPU-401 path a game actually took. All three are served at
+ * once, so "it made sound" does not say which one was used. */
+#define VOPL3_MPU_ON       0x0001u   /* intelligent engine enabled          */
+#define VOPL3_MPU_SAW_UART 0x0002u   /* a game asked for UART mode (0x3F)   */
+#define VOPL3_MPU_IN_UART  0x0004u   /* it is in UART mode right now        */
+#define VOPL3_MPU_PLAYING  0x0008u   /* the card's sequencer is running     */
+#define VOPL3_MPU_IRQ_BUSY 0x0010u   /* the configured IRQ was in use, so it
+                                      * was NOT claimed - polled instead    */
+#define VOPL3_MPU_IRQ(s)   (((s) >> 8) & 0xFF)   /* 0 = polled, none claimed */
+/* PHYSICAL interrupts seen on the line we virtualized. Should always be 0:
+ * there is no hardware behind this emulation. Anything else means a real
+ * device shares that IRQ, and VOPL3 is acknowledging and discarding its
+ * interrupts - pick another number, or irq=0. */
+#define VOPL3_MPU_HW(s)    (((s) >> 16) & 0xFFFFu)
+
+/* STAT[12]: ports another VxD already owned when we asked for them (VMM gives
+ * a port to a single owner), so their traffic never reaches us. Mirrored in
+ * the VxD, which includes none of this header. */
+#define VOPL3_TRAP_FM_388      0x000Fu   /* bits 0-3: 388, 389, 38A, 38B    */
+#define VOPL3_TRAP_FM_SB       0x00F0u   /* bits 4-7: 228, 248, 268, 288    */
+#define VOPL3_TRAP_FM_TRIED    0x0100u   /* the FM traps were asked for     */
+#define VOPL3_TRAP_MIDI_330    0x0200u
+#define VOPL3_TRAP_MIDI_331    0x0400u
+#define VOPL3_TRAP_MIDI_TRIED  0x0800u
 
 /* --- renderer status shared memory ---------------------------------------- */
 #define VOPL3_STATUS_NAME  "VOPL3_STATUS"

@@ -69,6 +69,7 @@
 #define IOCTL_VOPL3_STAT         0x1001
 #define IOCTL_VOPL3_MIDI_DRAIN   0x1002
 #define IOCTL_VOPL3_MIDI_ENABLE  0x1003
+#define IOCTL_VOPL3_MPU_INTEL    0x1006
 #define IOCTL_VOPL3_MIDI_VM_GONE 0x1004
 #define IOCTL_VOPL3_FM_ENABLE    0x1005
 
@@ -286,6 +287,23 @@ static void load_rate(void)
     for (i = 0; i < sizeof(ok) / sizeof(ok[0]); i++)
         if (r == ok[i]) { set_rate(r); return; }
     set_rate(RATE);
+}
+
+/* [midi] intelligent=0|1 plus [midi] irq=<n>, read once at startup: the IRQ
+ * to hand the VxD for MPU-401 intelligent mode, 0 for polled (claim no IRQ),
+ * or the whole thing off - the default, which keeps the plain UART bridge
+ * VOPL3 has always had. The game must be set to the same IRQ, and NOT to
+ * "IRQ 2", which cannot be served: VPICD refuses the cascade and the AT's
+ * INT 71h -> INT 0Ah chain does not fire in a DOS box. */
+static void load_mpu_intelligent(DWORD out[2])
+{
+    char ini[MAX_PATH];
+    UINT irq;
+    ini_path(ini);
+    out[0] = GetPrivateProfileInt("midi", "intelligent", 0, ini) ? 1 : 0;
+    irq    = GetPrivateProfileInt("midi", "irq", 9, ini);
+    if (irq && (irq < 3 || irq > 15)) irq = 9;
+    out[1] = irq;                      /* 0 = polled: claim no IRQ at all */
 }
 
 static void load_settings(void)
@@ -904,6 +922,15 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     if (midi_on) {
         DWORD ret = 0;
         DeviceIoControl(hvxd, IOCTL_VOPL3_MIDI_ENABLE, NULL, 0, NULL, 0, &ret, NULL);
+        /* MPU-401 intelligent mode: the VxD has to interrupt the DOS box on
+         * the IRQ the GAME is configured for. Startup only, and deliberately
+         * so - VPICD claims an IRQ for the life of the boot and has no way to
+         * give it back. The VxD does no registry or INI reading of its own,
+         * so the number comes from here. */
+        { DWORD mpu[2];
+          load_mpu_intelligent(mpu);
+          if (mpu[0]) DeviceIoControl(hvxd, IOCTL_VOPL3_MPU_INTEL, mpu,
+                                      sizeof(mpu), NULL, 0, &ret, NULL); }
     }
 
     hev = CreateEvent(NULL, FALSE, FALSE, NULL);

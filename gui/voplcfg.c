@@ -48,7 +48,7 @@ enum {
 
 static HWND   g_hwnd, g_dev, g_vol, g_voltxt, g_msg, g_emu, g_out;
 static HWND   g_opl_l1, g_opl_l2, g_opl_s1, g_opl_s2;   /* OPL3 status/stats */
-static HWND   g_mid_l1, g_mid_s1;                       /* MIDI status/stats */
+static HWND   g_mid_l1, g_mid_s1, g_mid_s2;             /* MIDI status/stats */
 static HWND   g_rev;                                    /* bottom revisions  */
 static HICON  g_icon, g_icon_sm;    /* 32x32 (window/Alt-Tab) + 16x16 (tray) */
 static HFONT  g_uifont;             /* DEFAULT_GUI_FONT - the standard dialog
@@ -65,7 +65,8 @@ static UINT   g_msg_reload;         /* registered message to the renderer */
  * synchronous SendMessage into Explorer - so we only touch them when the text
  * actually CHANGED, keeping mutex traffic near zero during gameplay. */
 static char g_p_opl_l1[96], g_p_opl_l2[96], g_p_opl_s1[128], g_p_opl_s2[128];
-static char g_p_mid_l1[96], g_p_mid_s1[128], g_p_rev[96], g_p_tip[128];
+static char g_p_mid_l1[96], g_p_mid_s1[128], g_p_mid_s2[128];
+static char g_p_rev[96], g_p_tip[128];
 
 /* live data sources (each optional) */
 static HANDLE        g_vxd = INVALID_HANDLE_VALUE;   /* \\.\VOPL3, read-only  */
@@ -89,6 +90,37 @@ static void ini_path(void)
     strcpy(p ? p + 1 : g_ini, "VOPL3.INI");
 }
 
+/* ------------------------------------------------------------- MPU-401 log
+ * DOS games run full screen, so nobody can watch the window while one is
+ * playing. With [gui] mpulog=1 the panel writes what it sees to VOPLMPU.LOG
+ * next to this program instead - which path the game took, and the counters
+ * behind it. It keeps polling while hidden in the tray, so this works with
+ * the window minimised; it only needs to be RUNNING.
+ *
+ * Written when the qualitative state changes (UART vs intelligent, polled vs
+ * interrupt-driven, playing or not), plus a snapshot every 15 s while the
+ * numbers move - so a whole session is a handful of lines, not one a second. */
+static int g_mpulog;
+
+static void mpulog(const char *what)
+{
+    char      path[MAX_PATH], stamp[32];
+    SYSTEMTIME t;
+    FILE      *f;
+    char      *p;
+
+    if (!g_mpulog) return;
+    strcpy(path, g_ini);
+    p = strrchr(path, '\\');
+    strcpy(p ? p + 1 : path, "VOPLMPU.LOG");
+    f = fopen(path, "a");
+    if (!f) return;
+    GetLocalTime(&t);
+    sprintf(stamp, "%02u:%02u:%02u", t.wHour, t.wMinute, t.wSecond);
+    fprintf(f, "%s  %s\n", stamp, what);
+    fclose(f);
+}
+
 /* set a control's text only when it changed (and never while hidden in tray) */
 static void upd(HWND h, char *prev, int prevsz, const char *s)
 {
@@ -106,15 +138,19 @@ static void vxd_open(void)
     g_vxd = CreateFile("\\\\.\\VOPL3", 0, 0, NULL, 0, FILE_FLAG_DELAYED_ERROR, NULL);
 }
 
-/* Read the VxD STAT ioctl; returns bytes filled (0 if no/failed driver). */
-static DWORD vxd_stat(DWORD st[10])
+/* Read the VxD STAT ioctl; returns bytes filled (0 if no/failed driver).
+ * The VxD fills as much as the buffer allows and says how much, so asking for
+ * everything is safe against an older driver - the extra words stay zero. */
+#define STAT_WORDS 32
+static DWORD vxd_stat(DWORD st[STAT_WORDS])
 {
     DWORD ret = 0;
     unsigned i;
-    for (i = 0; i < 10; i++) st[i] = 0;
+    for (i = 0; i < STAT_WORDS; i++) st[i] = 0;
     vxd_open();
     if (g_vxd == INVALID_HANDLE_VALUE) return 0;
-    if (!DeviceIoControl(g_vxd, IOCTL_VOPL3_STAT, NULL, 0, st, 40, &ret, NULL)) {
+    if (!DeviceIoControl(g_vxd, IOCTL_VOPL3_STAT, NULL, 0, st,
+                         STAT_WORDS * sizeof(DWORD), &ret, NULL)) {
         CloseHandle(g_vxd);                 /* driver went away - reopen later */
         g_vxd = INVALID_HANDLE_VALUE;
         return 0;
@@ -459,7 +495,7 @@ static void apply_settings(void)
 /* --------------------------------------------------------------- refresh */
 static void refresh(void)
 {
-    DWORD st[10];
+    DWORD st[STAT_WORDS];
     DWORD n = vxd_stat(st);
     VOPL3_STATUS *s = rstat();
     int live = renderer_live(s);
@@ -498,7 +534,17 @@ static void refresh(void)
             st[2] ? "  << OVERRUN" : "");
     upd(g_opl_s1, g_p_opl_s1, sizeof(g_p_opl_s1), line);
 
-    sprintf(line, "I/O:   writes=%u  nonbyte=%u", (unsigned)st[3], (unsigned)st[4]);
+    /* Ports another VxD got to first (STAT[12]): VMM gives a port to a single
+     * owner, so whoever asked first keeps it and our traps never fire. Say so
+     * here - otherwise the only symptom is "FM: idle" with no explanation. */
+    if (n >= 56 && (st[12] & VOPL3_TRAP_FM_TRIED) && (st[12] & VOPL3_TRAP_FM_388))
+        sprintf(line, "I/O:   writes=%u  nonbyte=%u  << 388-38B TAKEN by another driver",
+                (unsigned)st[3], (unsigned)st[4]);
+    else if (n >= 56 && (st[12] & VOPL3_TRAP_FM_TRIED) && (st[12] & VOPL3_TRAP_FM_SB))
+        sprintf(line, "I/O:   writes=%u  nonbyte=%u  (some SB FM ports taken)",
+                (unsigned)st[3], (unsigned)st[4]);
+    else
+        sprintf(line, "I/O:   writes=%u  nonbyte=%u", (unsigned)st[3], (unsigned)st[4]);
     upd(g_opl_s2, g_p_opl_s2, sizeof(g_p_opl_s2), line);
 
     /* The device the renderer really opened. When it isn't the one chosen
@@ -527,10 +573,104 @@ static void refresh(void)
                  s->active ? "realtime" : "realtime (held by MIDI)");
     upd(g_mid_l1, g_p_mid_l1, sizeof(g_p_mid_l1), line);
 
-    sprintf(line, "stats: captured=%u  lost=%u%s  uart=%u  sent=%u",
-            (unsigned)st[5], (unsigned)st[7], st[7] ? " << OVERRUN" : "",
-            (unsigned)st[8], live ? (unsigned)s->midi_bytes : 0u);
+    /* The byte pipeline, in order: what the VxD took from the DOS game, what
+     * it had to drop, what actually reached the synth. Anything describing
+     * the MODE belongs on the next line, with the mode. */
+    if (n >= 56 && (st[12] & VOPL3_TRAP_MIDI_TRIED) &&
+            (st[12] & (VOPL3_TRAP_MIDI_330 | VOPL3_TRAP_MIDI_331)))
+        sprintf(line, "bytes: 330/331 TAKEN by another driver");
+    else
+        sprintf(line, "bytes: captured=%u  lost=%u%s  sent to synth=%u",
+                (unsigned)st[5], (unsigned)st[7], st[7] ? " << OVERRUN" : "",
+                live ? (unsigned)s->midi_bytes : 0u);
     upd(g_mid_s1, g_p_mid_s1, sizeof(g_p_mid_s1), line);
+
+    /* Which MPU path a game actually used. VOPL3 serves UART, polled
+     * intelligent mode and interrupt-driven intelligent mode at the same
+     * time, so this is the only way to know which one a title picked. */
+    /* intel = commands that exist only in intelligent mode (everything but
+     * reset and enter-UART), req = times the card's sequencer asked the game
+     * for data. Together they say whether a game merely touched intelligent
+     * mode or really drove it. */
+    if (n < 72 || !(st[14] & VOPL3_MPU_ON)) {
+        strcpy(line, "mode:  UART bridge (intelligent mode off)");
+    } else if (st[14] & VOPL3_MPU_IN_UART) {
+        sprintf(line, "mode:  UART  (switched after %u intelligent cmds)",
+                (unsigned)st[13]);
+    } else {
+        char how[32];
+        if (st[15])                     sprintf(how, "irq %u x%u",
+                                                VOPL3_MPU_IRQ(st[14]),
+                                                (unsigned)st[15]);
+        else if (st[14] & VOPL3_MPU_IRQ_BUSY) strcpy(how, "polled, irq IN USE");
+        else if (VOPL3_MPU_IRQ(st[14])) strcpy(how, "polled");
+        else                            strcpy(how, "polled, no irq");
+        sprintf(line, "mode:  intelligent%s, %s   intel=%u  req=%u",
+                (st[14] & VOPL3_MPU_PLAYING) ? ", playing" : "", how,
+                (unsigned)st[13], (unsigned)st[16]);
+        /* Real interrupts on our line: never expected, and worth shouting
+         * about - it means a device shares the IRQ and we are eating its
+         * interrupts. */
+        if (VOPL3_MPU_HW(st[14]))
+            sprintf(line + strlen(line), "  << HW IRQ x%u",
+                    (unsigned)VOPL3_MPU_HW(st[14]));
+    }
+    upd(g_mid_s2, g_p_mid_s2, sizeof(g_p_mid_s2), line);
+
+    /* ...and the same thing to the log, for games that cannot be watched */
+    if (g_mpulog && n >= 72) {
+        static DWORD prev_key = 0xFFFFFFFFu, last_ms, last_counts;
+        DWORD counts = st[13] + st[15] + st[16] + st[17];
+        DWORD now    = GetTickCount();
+        DWORD key    = (st[14] & 0xFFFFu)            /* mode, uart, playing, irq */
+                     | (st[15] ? 0x10000u : 0u)      /* has interrupted         */
+                     | (st[16] ? 0x20000u : 0u)      /* has asked for data      */
+                     | (st[13] ? 0x40000u : 0u);     /* has used intelligent mode */
+        if (key != prev_key ||
+                (counts != last_counts && (now - last_ms) > 15000)) {
+            char l2[220];
+            /* The renderer's own counter too: bytes actually handed to
+             * midiOut. If the driver's numbers move and this one does not,
+             * the problem is downstream of the MPU emulation; if both move
+             * and nothing is audible, it is the synth or the channel. */
+            sprintf(l2, "%s   polls=%u sent=%u synth=%s",
+                    line, (unsigned)st[17],
+                    live ? (unsigned)s->midi_bytes : 0u,
+                    !live ? "?" : (s->synth_open ? "open" : "closed"));
+            mpulog(l2);
+
+            /* The commands themselves. The first 32 show how the game's
+             * driver sets the card up; the rolling last 16 show what it
+             * settles into - which is how you tell "loads timed tracks and
+             * lets the card play" from "pushes one event at a time". */
+            if (n >= 128) {
+                static DWORD logged_first;
+                BYTE  *b = (BYTE *)&st[18];
+                char   t[160], *q;
+                DWORD  i, first_n = st[30], total = st[31];
+
+                if (first_n && first_n != logged_first) {
+                    logged_first = first_n;
+                    strcpy(t, "  first cmds:");
+                    q = t + strlen(t);
+                    for (i = 0; i < first_n && i < 32; i++)
+                        { sprintf(q, " %02X", b[i]); q += 3; }
+                    mpulog(t);
+                }
+                if (total) {
+                    DWORD have = (total < 16) ? total : 16;
+                    strcpy(t, "  last cmds: ");
+                    q = t + strlen(t);
+                    for (i = 0; i < have; i++)
+                        { sprintf(q, " %02X", b[32 + ((total - have + i) & 15)]); q += 3; }
+                    mpulog(t);
+                }
+            }
+            prev_key    = key;
+            last_ms     = now;
+            last_counts = counts;
+        }
+    }
 
     /* --- bottom line: revisions --- */
     if (n >= 40)  revstr(st[9], drv);
@@ -627,7 +767,7 @@ static void build_ui(HWND w)
     g_opl_s2 = mk(w, "STATIC", "", 0, 20, 262, 368, 18, 0);
 
     /* ============ MPU-401 MIDI bridge ============ */
-    mk(w, "BUTTON", "MPU-401 MIDI bridge", BS_GROUPBOX, 8, 296, 388, 196, 0);
+    mk(w, "BUTTON", "MPU-401 MIDI bridge", BS_GROUPBOX, 8, 296, 388, 208, 0);
     mk(w, "STATIC", "ports 330-331 -> VXD trap -> renderer (MIDI parser)",
        0, 20, 316, 368, 18, 0);
     mk(w, "STATIC", "-> midiOut -> any installed MIDI device",
@@ -641,14 +781,15 @@ static void build_ui(HWND w)
     g_dev = mk(w, "COMBOBOX", "", WS_BORDER | WS_VSCROLL | CBS_DROPDOWNLIST | WS_TABSTOP,
                20, 418, 368, 200, ID_DEV);
 
-    g_mid_l1 = mk(w, "STATIC", "", 0, 20, 448, 368, 18, 0);
-    g_mid_s1 = mk(w, "STATIC", "", 0, 20, 466, 368, 18, 0);
+    g_mid_l1 = mk(w, "STATIC", "", 0, 20, 444, 368, 18, 0);
+    g_mid_s1 = mk(w, "STATIC", "", 0, 20, 462, 368, 18, 0);
+    g_mid_s2 = mk(w, "STATIC", "", 0, 20, 480, 368, 18, 0);
 
     /* ============ bottom ============ */
-    mk(w, "BUTTON", "Apply", 0, 157, 500, 90, 26, ID_APPLY);
-    g_msg = mk(w, "STATIC", "", 0, 20, 532, 368, 18, 0);
-    mk(w, "STATIC", "", SS_ETCHEDHORZ, 8, 554, 388, 2, 0);
-    g_rev = mk(w, "STATIC", "", 0, 20, 562, 368, 18, 0);
+    mk(w, "BUTTON", "Apply", 0, 157, 512, 90, 26, ID_APPLY);
+    g_msg = mk(w, "STATIC", "", 0, 20, 544, 368, 18, 0);
+    mk(w, "STATIC", "", SS_ETCHEDHORZ, 8, 566, 388, 2, 0);
+    g_rev = mk(w, "STATIC", "", 0, 20, 574, 368, 18, 0);
 
     fill_devices();
     fill_outputs();
@@ -764,6 +905,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 
     ini_path();
+    g_mpulog = GetPrivateProfileInt("gui", "mpulog", 0, g_ini) ? 1 : 0;
+    if (g_mpulog) {
+        char ver[16];
+        revstr(VOPL3_REV_DWORD, ver);
+        mpulog("--- control panel started, MPU-401 logging on ---");
+        mpulog(ver);
+    }
     g_uifont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);  /* before CreateWindow:
                                                           * build_ui runs in
                                                           * WM_CREATE */
@@ -788,7 +936,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
 
     {
         DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-        RECT rc = { 0, 0, 404, 586 };
+        RECT rc = { 0, 0, 404, 598 };
         AdjustWindowRect(&rc, style, FALSE);
         w = CreateWindow("VOPLCFG", APP_TITLE, style, CW_USEDEFAULT, CW_USEDEFAULT,
                          rc.right - rc.left, rc.bottom - rc.top, NULL, NULL, hInst, NULL);

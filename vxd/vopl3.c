@@ -84,6 +84,15 @@ DDB VXD_DDB = {
     'Rsv1', 'Rsv2', 'Rsv3',
 };
 
+/* Bits of the trap mask published as STAT[12] - mirrored in vopl3ipc.h for
+ * the GUI (this file deliberately includes nothing of it). Bits 0-3 are the
+ * AdLib ports 388-38B, bits 4-7 the SB FM pairs at 228/248/268/288; a set bit
+ * means another VxD already owned that port, so we never saw its traffic. */
+#define VOPL3_TRAP_FM_TRIED    0x0100u
+#define VOPL3_TRAP_MIDI_330    0x0200u
+#define VOPL3_TRAP_MIDI_331    0x0400u
+#define VOPL3_TRAP_MIDI_TRIED  0x0800u
+
 /* ==================== all mutable state (must be file-backed) =========
  * VMM does NOT reliably zero-fill this VxD's uninitialized BSS pages
  * (verified: BSS lands past the file end). So keep every mutable global in
@@ -114,6 +123,17 @@ struct vstate {
     DWORD fm_trapped;          /* 1 once 0x388-0x38B handlers installed   */
     DWORD midi_vm;             /* handle of the VM currently sending MIDI  */
     DWORD midi_vm_gone;        /* set when that VM terminates (one-shot)   */
+    DWORD trap_mask;           /* ports another VxD already owned - STAT[12] */
+    DWORD mpu_intel;           /* commands that exist only in intelligent mode */
+    /* A trace of the MPU commands a game sends: the first 32, which show how
+     * its driver sets the card up, and a rolling last 16, which show what it
+     * settles into. Counters alone cannot tell "loads timed tracks" from
+     * "pushes one event at a time", and there is no serial port on the
+     * machines this runs on - so the control panel writes these to its log. */
+    BYTE  cmd_first[32];
+    DWORD cmd_first_n;
+    BYTE  cmd_last[16];
+    DWORD cmd_total;
 };
 static struct vstate S = { 0x4C504F56 };   /* 'VOPL' */
 
@@ -316,6 +336,92 @@ DWORD __stdcall opl_read(DWORD port)
     return (DWORD)opl_status;
 }
 
+/* ============ shared ring-0 plumbing for the MPU-401 engine ============
+ * VPICD (interrupt virtualization) and a PIT-tick clock. Both are used by the
+ * intelligent-mode engine below and by the -IrqTest build's experiment. */
+#include "vpicd.h"
+
+/* VPICD_Virtualize_IRQ: EDI = descriptor -> EAX = handle, CF set = refused */
+static DWORD vpicd_virtualize(VPICD_IRQ_Descriptor *d)
+{
+    DWORD h = 0, cf = 0;
+    void *p = d;
+    _asm {
+        push ebx
+        push edi
+        mov  edi, p
+    }
+    VxDCall(VPICD, Virtualize_IRQ);
+    _asm {
+        sbb  ebx, ebx            /* CF -> -1, no CF -> 0 (flags still fresh) */
+        mov  cf, ebx
+        mov  h, eax
+        pop  edi
+        pop  ebx
+    }
+    return cf ? 0 : h;
+}
+
+/* both take EAX = IRQ handle, EBX = VM handle */
+static void vpicd_set_int(DWORD h, DWORD vm)
+{
+    _asm {
+        push ebx
+        mov  eax, h
+        mov  ebx, vm
+    }
+    VxDCall(VPICD, Set_Int_Request);
+    _asm pop ebx
+}
+
+static void vpicd_clear_int(DWORD h, DWORD vm)
+{
+    _asm {
+        push ebx
+        mov  eax, h
+        mov  ebx, vm
+    }
+    VxDCall(VPICD, Clear_Int_Request);
+    _asm pop ebx
+}
+
+/* EAX = IRQ handle. Acknowledges a PHYSICAL interrupt on a virtualized line. */
+static void vpicd_phys_eoi(DWORD h)
+{
+    _asm mov eax, h
+    VxDCall(VPICD, Phys_EOI);
+}
+
+/* Raw PIT ticks (1.193182 MHz), the finest clock VTD offers. The intelligent
+ * engine times itself on this instead of trusting its own timer interval. */
+static DWORD sys_time_pit(void)
+{
+    DWORD lo;
+    VxDCall(VTD, VTD_Get_Real_Time);
+    _asm mov lo, eax
+    return lo;
+}
+
+#define MIDI_RING_SIZE 4096               /* power of two; heap-allocated */
+
+/* One captured MIDI byte on its way to the user-mode renderer. Both the UART
+ * bridge and the intelligent engine's player feed this, so everything built
+ * around the ring - device choice, synth lifecycle, DOS-box release - applies
+ * to both. vm = 0 keeps the current owner (the engine plays on its own). */
+static void midi_ring_put(BYTE b, DWORD vm)
+{
+    if (!S.midi_addr) return;
+    ((BYTE *)S.midi_addr)[S.midi_head & (MIDI_RING_SIZE - 1)] = b;
+    S.midi_head++;
+    if (vm) {
+        if (vm != S.midi_vm) S.midi_vm_gone = 0;   /* a new source: an old
+                                                    * gone-flag is not ours */
+        S.midi_vm = vm;
+    }
+}
+
+#include "mpu401i.c"      /* the intelligent-mode engine (GPL, see its head) */
+
 /* ===================== MPU-401 (MIDI) UART emulation =====================
  * Ports 0x330 (data) / 0x331 (status+command). We emulate ONLY UART ("dumb")
  * mode as a plain byte bridge: every data byte written in UART mode is a raw
@@ -329,33 +435,60 @@ DWORD __stdcall opl_read(DWORD port)
  *   bit 0x80 (DSR) = 1 -> NO data available to read. 0 only while an ACK byte
  *                        is pending. (We do not do MIDI-IN.)
  */
-#define MIDI_RING_SIZE 4096               /* power of two; heap-allocated */
-
 /* __stdcall so the naked trampoline can push args on the stack */
 void __stdcall mpu_write(DWORD port, DWORD data, DWORD vm)
 {
     BYTE d = (BYTE)data;
 
+    if (port & 1) {                       /* trace every command, both paths */
+        if (S.cmd_first_n < sizeof(S.cmd_first))
+            S.cmd_first[S.cmd_first_n++] = d;
+        S.cmd_last[S.cmd_total & 15] = d;
+        S.cmd_total++;
+    }
+
+    /* With intelligent mode enabled ([midi] intelligent=, passed in by the
+     * renderer) the engine owns both ports; it falls back to the plain byte
+     * bridge itself once a game asks for UART mode. Disabled, none of it runs
+     * and this is exactly the A08 stub. */
+    if (mpu_i_active()) {
+        mpu_i_set_vm(vm);
+        if (port & 1) {
+            /* count intelligent-mode commands here too - the engine path
+             * bypasses the stub below, where this used to be counted */
+            if (d != 0xFF && d != 0x3F) S.mpu_intel++;
+            mpu_command(d);
+            S.mpu_uart = mpu_i_uart();    /* keep STAT's view in step */
+            return;
+        }
+        if (mpu_i_uart()) midi_ring_put(d, vm);   /* UART: raw MIDI byte */
+        else              mpu_data(d);
+        return;
+    }
+
     if (port & 1) {                       /* 0x331: command */
         if (d == 0xFF)      { S.mpu_uart = 0; S.mpu_ack = 0xFE; } /* reset  */
         else if (d == 0x3F) { S.mpu_uart = 1; S.mpu_ack = 0xFE; } /* ->UART */
-        else                {                 S.mpu_ack = 0xFE; } /* ack rest */
+        else { S.mpu_intel++;                 S.mpu_ack = 0xFE; } /* ack rest */
+        /* mpu_intel counts the commands that are NEITHER reset nor
+         * enter-UART, i.e. the intelligent-mode ones we only pretend to
+         * accept. Published through STAT so the control panel can show
+         * whether any game actually asks for intelligent mode - the demand
+         * question behind MPU401-INTELLIGENT-PLAN.md. A game that probes and
+         * then falls back to UART bumps this a little and then sends 0x3F. */
         return;
     }
     /* 0x330: data */
-    if (S.mpu_uart && S.midi_addr) {      /* UART mode: this is a MIDI byte */
-        ((BYTE *)S.midi_addr)[S.midi_head & (MIDI_RING_SIZE - 1)] = d;
-        S.midi_head++;
-        if (vm != S.midi_vm)              /* a new source: a gone-flag still  */
-            S.midi_vm_gone = 0;           /* pending is about an older VM, and
-                                           * would close THIS one's synth      */
-        S.midi_vm = vm;                   /* remember who's playing MIDI, so we
-                                           * notice when its DOS box closes    */
-    }
+    if (S.mpu_uart) midi_ring_put(d, vm); /* UART mode: this is a MIDI byte */
 }
 
 DWORD __stdcall mpu_read(DWORD port)
 {
+    if (mpu_i_active())                   /* the engine answers both ports,
+                                           * UART mode included (its queue
+                                           * still holds the ACKs) */
+        return (port & 1) ? mpu_i_read_status() : mpu_i_read_data();
+
     if (port & 1)                         /* 0x331: status */
         return S.mpu_ack ? 0x00 : 0x80;   /* ready to write; data iff ACK   */
     /* 0x330: data - hand back the pending ACK, then clear it */
@@ -365,6 +498,7 @@ DWORD __stdcall mpu_read(DWORD port)
         return b;
     }
 }
+
 
 /* ===================== I/O trap trampolines =====================
  * VMM Install_IO_Handler callback convention:
@@ -506,6 +640,7 @@ static DWORD heap_alloc(DWORD nbytes)
     return p;
 }
 
+
 /* ============================ init ============================ */
 static void do_install(void)
 {
@@ -543,18 +678,28 @@ static void fm_trap_install(void)
     if (S.fm_trapped) return;
     S.fm_trapped = 1;
 #ifndef VOPL3_NOINSTALL   /* -DVOPL3_NOINSTALL builds a load-but-do-nothing VxD for A/B baseline tests */
+    /* A port another VxD already owns is simply left to it - VMM gives a port
+     * to a single owner. Which ones were refused is recorded in trap_mask and
+     * published through STAT, so the control panel can say so: without that,
+     * a driver that grabbed 0x388 before us (an AdLib/FM Windows driver, say)
+     * leaves VOPL3 looking merely idle, with the reason only on COM1. */
+    S.trap_mask |= VOPL3_TRAP_FM_TRIED;
     r = io_install(0x388, (DWORD)io_trap);  ser_str("  388 "); ser_str(r ? "OK\n" : "TAKEN\n");
+    if (!r) S.trap_mask |= 1u << 0;
     r = io_install(0x389, (DWORD)io_trap);  ser_str("  389 "); ser_str(r ? "OK\n" : "TAKEN\n");
+    if (!r) S.trap_mask |= 1u << 1;
     r = io_install(0x38A, (DWORD)io_trap);  ser_str("  38A "); ser_str(r ? "OK\n" : "TAKEN\n");
+    if (!r) S.trap_mask |= 1u << 2;
     r = io_install(0x38B, (DWORD)io_trap);  ser_str("  38B "); ser_str(r ? "OK\n" : "TAKEN\n");
-    {   /* base+8/+9 for SB bases 220-280; a pair another VxD already owns
-         * is simply left to it */
+    if (!r) S.trap_mask |= 1u << 3;
+    {   /* base+8/+9 for SB bases 220-280 */
         static const char *const name[4] = { "  228/229 ", "  248/249 ",
                                              "  268/269 ", "  288/289 " };
         DWORD i;
         for (i = 0; i < 4; i++) {
             r = io_install(0x228 + i * 0x20, (DWORD)io_trap);
             if (r) io_install(0x229 + i * 0x20, (DWORD)io_trap);
+            else   S.trap_mask |= 1u << (4 + i);
             ser_str(name[i]); ser_str(r ? "OK\n" : "TAKEN\n");
         }
     }
@@ -639,6 +784,12 @@ void __stdcall vm_destroyed(DWORD vm)
                                          * is a DOS box, 0 if the System VM or
                                          * unknown (only with an 8-byte buffer) */
 #define IOCTL_VOPL3_FM_ENABLE    0x1005 /* start trapping the FM ports (once) */
+#define IOCTL_VOPL3_MPU_INTEL    0x1006 /* in: DWORD[2] = { on, irq } - turn  */
+                                        /* MPU-401 intelligent mode on, with  */
+                                        /* irq 0 meaning "polled, claim no    */
+                                        /* IRQ". The renderer passes what the */
+                                        /* user configured; the VxD does no   */
+                                        /* registry or INI reading itself.    */
 
 static DWORD sys_vm_handle(void)
 {
@@ -653,7 +804,9 @@ static DWORD sys_vm_handle(void)
 /* VxD revision reported by STAT out[9]: up to 4 ASCII chars, little-endian,
  * printed as a string by readers. Keep in sync with vopl3ipc.h VOPL3_REV
  * (kept literal here so the VxD's minimal build needs no extra include). */
+#ifndef VOPL3_VXD_REV                   /* overridable (-D...) to tag test builds */
 #define VOPL3_VXD_REV 0x00383041        /* "A08" */
+#endif
 
 DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params)
 {
@@ -686,11 +839,23 @@ DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params
             rc = 0;
             break;
 
+        case IOCTL_VOPL3_MPU_INTEL:     /* renderer: intelligent mode + IRQ */
+            if (params->cbInBuffer >= 8) {
+                DWORD *in = (DWORD *)params->lpInBuffer;
+                mpu_i_enable(in[0], in[1]);   /* [0] on/off, [1] IRQ (0 = polled) */
+                rc = 0;
+            }
+            break;
+
         case IOCTL_VOPL3_MIDI_ENABLE:   /* renderer: mode includes MIDI */
             if (!S.midi_trapped) {
-                io_install(0x330, (DWORD)mpu_trap);
-                io_install(0x331, (DWORD)mpu_trap);
+                S.trap_mask |= VOPL3_TRAP_MIDI_TRIED;
+                if (!io_install(0x330, (DWORD)mpu_trap)) S.trap_mask |= VOPL3_TRAP_MIDI_330;
+                if (!io_install(0x331, (DWORD)mpu_trap)) S.trap_mask |= VOPL3_TRAP_MIDI_331;
                 S.midi_trapped = 1;
+                ser_str("VOPL3: MPU ports 330/331 ");
+                ser_str((S.trap_mask & (VOPL3_TRAP_MIDI_330 | VOPL3_TRAP_MIDI_331))
+                            ? "TAKEN by another driver\n" : "OK\n");
             }
             rc = 0;
             break;
@@ -756,6 +921,30 @@ DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params
                 if (params->cbOutBuffer >= 40) {   /* extended: VxD revision */
                     out[9] = VOPL3_VXD_REV;        /* packed major<<16|minor<<8|patch */
                     nout = 40;
+                }
+                if (params->cbOutBuffer >= 48) {   /* extended: port reads, ticks */
+                    out[10] = reads_388;           /* OPL status-port reads */
+                    out[11] = 0;                   /* reserved */
+                    nout = 48;
+                }
+                if (params->cbOutBuffer >= 56) {   /* extended: traps, MPU mode */
+                    out[12] = S.trap_mask;         /* ports another VxD owns */
+                    out[13] = S.mpu_intel;         /* intelligent-mode commands */
+                    nout = 56;
+                }
+                if (params->cbOutBuffer >= 72) {   /* extended: which MPU path
+                                                    * a game actually used */
+                    mpu_i_stat(&out[14]);          /* state, irqs, reqs, polls */
+                    nout = 72;
+                }
+                if (params->cbOutBuffer >= 128) {  /* extended: command trace */
+                    BYTE *o = (BYTE *)&out[18];
+                    DWORD k;
+                    for (k = 0; k < sizeof(S.cmd_first); k++) o[k] = S.cmd_first[k];
+                    for (k = 0; k < sizeof(S.cmd_last); k++)  o[32 + k] = S.cmd_last[k];
+                    out[30] = S.cmd_first_n;
+                    out[31] = S.cmd_total;
+                    nout = 128;
                 }
                 if (params->lpcbBytesReturned)
                     *(DWORD *)params->lpcbBytesReturned = nout;

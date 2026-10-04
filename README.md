@@ -1,12 +1,17 @@
-# VOPL3 — Virtual OPL3 FM for Windows 98/ME
+# VOPL3 — Virtual OPL3 FM and MPU-401 MIDI bridge for Windows 98/ME
 
-*A software AdLib / OPL3 sound chip for Windows 98/ME machines that don't have one.*
-A ring-0 port-trap **VxD** captures the OPL register writes a program makes (a DOS
-game, typically) and hands them to a user-mode renderer built around **Nuked
-OPL3** (or, as alternatives, DOSBox's DBOPL or ymfm), which synthesizes the music and plays it through the normal Windows audio
-output — all while **coexisting** with Microsoft's SBEMUL so DOS games keep their
-digital sound effects (and MIDI). It can *optionally* also take over DOS-game
-**MPU-401 MIDI** and route it to any synth you choose (see **MIDI** below).
+*A software AdLib / OPL3 sound chip for Windows 98/ME machines — and an
+MPU-401 bridge, intelligent mode included, that takes DOS-game MIDI away from
+SBEMUL's fixed synth and sends it wherever you like.*
+A ring-0 port-trap **VxD** captures the OPL register writes a program makes (a
+DOS game, typically) and hands them to a user-mode renderer built around
+**Nuked OPL3** (or, as alternatives, DOSBox's DBOPL or ymfm), which synthesizes
+the music and plays it through the normal Windows audio output — all while
+**coexisting** with Microsoft's SBEMUL so DOS games keep their digital sound
+effects. It can *optionally* also take over DOS-game **MPU-401 MIDI** — both
+the UART mode every later game uses and the original card's **intelligent
+mode**, which older MT-32 titles need — and route it to any synth you choose
+(see **MIDI** below).
 
 ---
 
@@ -51,7 +56,7 @@ flowchart TD
     G["DOS game (Win9x DOS box)"]
 
     subgraph k["ring 0 (kernel)"]
-        VXD["VOPL3.VXD<br/>traps OPL ports 0x388-0x38B + SB FM ports base+8/+9 when VOPL3 plays FM (VMM Install_IO_Handler)<br/>+ MPU-401 ports 0x330-0x331 when VOPL3 handles MIDI<br/>keeps AdLib detection alive<br/>queues writes into ring buffers"]
+        VXD["VOPL3.VXD<br/>traps OPL ports 0x388-0x38B + SB FM ports base+8/+9 when VOPL3 plays FM (VMM Install_IO_Handler)<br/>+ MPU-401 ports 0x330-0x331 when VOPL3 handles MIDI<br/>keeps AdLib detection alive<br/>emulates the MPU-401: UART, and intelligent mode (commands, track sequencer, clock)<br/>queues writes into ring buffers"]
         SB["SBEMUL.SYS<br/>digital audio<br/>(+ MIDI / fake AdLib detection, if left to SBEMUL)"]
     end
 
@@ -61,9 +66,10 @@ flowchart TD
     end
 
     G -- "music = AdLib / OPL3<br/>OUT 0x388-0x38B" --> VXD
-    G -- "music = General MIDI<br/>OUT 0x330-0x331" --> VXD
+    G -- "music = General MIDI / MT-32<br/>OUT 0x330-0x331" --> VXD
+    VXD -. "intelligent mode only:<br/>replies the game reads back,<br/>and an IRQ if it uses one (VPICD)" .-> G
     G -- "sound FX = Sound Blaster" --> SB
-    VXD -- "ring buffers<br/>(DeviceIoControl)" --> SRV
+    VXD -- "ring buffers: OPL writes,<br/>MIDI bytes (DeviceIoControl)" --> SRV
     SRV -- "OPL3 music" --> KMIX["KMIXER (software mixing)"]
     SRV -- "MIDI stream" --> SYN
     SYN -. "audio (software synths)" .-> KMIX
@@ -159,8 +165,12 @@ SBEMUL as needed (including FM tables moved by earlier VOPL3 versions, where
 
 | | **VOPL3** (recommended) | **Left free** | **SBEMUL** (stock) |
 |---|---|---|---|
-| **FM** — ports 0x388–0x38B, 0x2x8/0x2x9 | SBEMUL is steered away from these ports; VOPL3 traps them and synthesizes the music | SBEMUL is steered away from these ports, and VOPL3 doesn't trap them either — they are free for anything else that uses them | games detect an AdLib, but AdLib music is silent |
-| **MIDI** — ports 0x330/0x331 | SBEMUL is steered away from these ports; VOPL3 sends DOS-game MIDI to any device (see **MIDI** below) | — | MIDI plays on the Microsoft GS Wavetable synth |
+| **FM** — 0x388–0x38B, 0x2x8/0x2x9 | traps them and synthesizes the music | nothing claims them at all | detection passes, music is silent |
+| **MIDI** — 0x330/0x331 | sends DOS-game MIDI to any device (see **MIDI** below) | — | plays on the fixed GS Wavetable synth |
+
+In the first two columns SBEMUL is steered away from the ports in question, so
+its digital sound keeps working either way; only the stock column leaves them
+to SBEMUL.
 
 Leaving both to SBEMUL isn't offered, since VOPL3 would have nothing to do. When
 VOPL3 doesn't play FM, the renderer opens no audio stream at all. The choices are
@@ -194,8 +204,69 @@ choice), it takes over the MPU-401:
   indices.
 - VOPL3 then *replaces* SBEMUL's MIDI (SBPATCH frees 0x330/0x331). The default
   target is the MIDI Mapper — normally the same GS synth SBEMUL would use — so
-  nothing changes until you pick another device. Scope is **UART mode**;
-  MPU-401 intelligent mode is not emulated.
+  nothing changes until you pick another device.
+
+### MPU-401 intelligent mode (on by default, without an interrupt)
+
+Everything from about 1991 on uses the MPU's simple **UART** mode, which is what
+the above describes. Older titles — Sierra's SCI era and its contemporaries,
+usually with an MT-32 — never ask for UART mode and talk to the card in
+**intelligent mode** instead. They are **silent** without it, since the UART
+bridge only forwards data bytes once a game has switched.
+
+Intelligent mode is two things: a command protocol, and an on-board sequencer
+with eight track buffers, its own clock and an interrupt. How far a program
+goes is up to it — some keep their own timing and use the commands as a
+smarter byte pipe (*King's Quest IV* resets the card once, then sends one
+"send data" command per MIDI event: `FF D0 D0 D0 …`), while others hand the
+card timed track data and let it play. VOPL3 emulates both halves, so either
+shape works.
+
+```ini
+[midi]
+intelligent=1     ; the default; 0 = UART only, as releases before A09
+irq=0             ; the default: answer and keep time, but never interrupt
+                  ; 3-15 = also raise that interrupt, and it must match
+                  ; whatever the game is configured for
+```
+
+The interrupt is off by default because taking one is not free. Raising it is
+a VM-side simulation (the physical 8259 is never touched), but *owning* the
+line puts the driver in the path of real interrupts on it, which it
+acknowledges and discards rather than passing on — so whatever was using that
+line stops hearing from its device.
+
+**Set `irq=` only to a line nothing else uses.** Windows will hand over an IRQ
+that one of its own drivers is working with: configuring IRQ 7 on a machine
+whose HD-Audio sits there hangs the boot, right about when the audio stack
+comes up. VOPL3 refuses a line that is unmasked at the interrupt controller —
+the sign that something is listening — and stays polled instead, which the
+control panel shows as `polled, irq IN USE`. That check can only go on what
+the interrupt controller shows at that moment, so the rule stands: pick a free
+line. If a real interrupt ever does
+arrive on a line VOPL3 holds, the control panel flags it as `<< HW IRQ xN`.
+
+The engine answers the full command set, keeps time on the card's own clock
+(re-anchored on the PIT, so a jittery timer doesn't become tempo drift), runs
+the track buffers, and raises the interrupt through **VPICD** into the DOS box
+that owns the session. Played notes go into the same ring the UART bridge uses,
+so the device selection and synth lifecycle apply unchanged.
+
+Two things worth knowing. **"IRQ 2" cannot be served**: Windows will not hand out
+the cascade line, and the BIOS `INT 71h → INT 0Ah` redirection that makes a card
+jumpered to "IRQ 2" work on real hardware does not happen inside a DOS box — set
+the game to 9. And `intelligent=` takes effect when the renderer restarts, while
+`irq=` needs a reboot, because the interrupt is claimed for the whole Windows
+session.
+
+Games differ in how far they drive the card, and sound alone doesn't tell you
+which path was taken, so the driver reports it: the control panel shows the mode
+live, and `[gui] mpulog=1` writes it to `C:\VOPL3\VOPLMPU.LOG` — which is what
+you need for a full-screen DOS game. Measured so far: *Monkey Island 2* and
+*A-10 Tank Killer* switch to UART; *King's Quest IV* stays in intelligent mode
+and polls.
+
+Not implemented: record mode, MIDI input, MT-32 SysEx pacing, and the metronome.
 
 ## Control panel (`VOPLCFG.EXE`)
 
@@ -237,16 +308,29 @@ tray; X exits. `INSTALL.BAT` asks whether it should start with Windows
 | **Nuked-OPL3-fast** | tgies (fork of Nuked OPL3) | LGPL 2.1 | Alternate renderer backend — bit-exact output at ~half the CPU cost |
 | **DBOPL** (`dbopl.cpp`) | The DOSBox Team (DOSBox SVN r4494) | GPL v2 or later | Third renderer backend — far less CPU, less accurate |
 | **ymfm** (`ymfm_opl.cpp`) | Aaron Giles (MAME's FM cores) | BSD 3-clause | Fourth renderer backend — about the CPU cost of Nuked-OPL3-fast |
-| **vmdisp9x** VxD glue (`vmm.h`, `io32.h`, `code32.h`) + `fixlink` | JHRobotics | MIT | Building a loadable Win9x VxD with Open Watcom |
+| **DOSBox `mpu401.cpp`** + **SoftMPU** | The DOSBox Team; bjt42, elianda | GPL v2 (+) | The MPU-401 intelligent-mode engine in the VxD (`vxd/mpu401i.c`) follows their structure |
+| **vmdisp9x** VxD glue (`vmm.h`, `io32.h`, `code32.h`, `vpicd.h`) + `fixlink` | JHRobotics | MIT | Building a loadable Win9x VxD with Open Watcom |
 | **SBEMUL.SYS** | Microsoft (stock Win98) | — | Patched in place for coexistence; **not** redistributed |
 | **Open Watcom** | — | — | Compiler/linker that still targets Win9x (16/32-bit) |
 | **GCC** (32-bit MinGW, e.g. MSYS2's mingw32) | — | — | Compiles the emulator cores only (~2x faster code than Watcom's); linked by Watcom |
 
 ## License
 
-VOPL3's own code — the VxD, the renderer glue, `SBPATCH`, the installer, and the
-build scripts — is **MIT** (see [LICENSE](LICENSE)). Bundled third-party parts keep
-their own licenses:
+VOPL3's own code — the renderer glue, the control panel, `SBPATCH`, the
+installer, and the build scripts — is **MIT** (see [LICENSE](LICENSE)), with one
+exception, the driver:
+
+- **`VOPL3.VXD` is GPL v2 or later as a whole**, because its MPU-401
+  intelligent-mode engine (`vxd/mpu401i.c`) is derived from DOSBox's
+  `mpu401.cpp` and bjt42's **SoftMPU**, both GPL. Its license text ships with
+  the installer as `DBOPL-LICENSE.txt` (the same GPL v2 text that already
+  travels with `VOPLDB.EXE`), and its complete source is this repository.
+  The user-mode programs are **separate programs** that talk to the driver
+  through an ioctl and a shared-memory block — they do not link against it and
+  stay MIT. `vxd/vopl3.c` deliberately includes no header of theirs, which
+  keeps that boundary visible in the source.
+
+Bundled third-party parts keep their own licenses:
 
 - **Nuked OPL3** (`nuked-opl3/`) and **Nuked-OPL3-fast** (`nuked-opl3-fast/`)
   are **LGPL 2.1**. The renderer statically links one of them, so LGPL 2.1 asks
