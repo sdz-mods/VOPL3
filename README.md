@@ -241,9 +241,15 @@ that one of its own drivers is working with: configuring IRQ 7 on a machine
 whose HD-Audio sits there hangs the boot, right about when the audio stack
 comes up. VOPL3 refuses a line that is unmasked at the interrupt controller —
 the sign that something is listening — and stays polled instead, which the
-control panel shows as `polled, irq IN USE`. That check can only go on what
-the interrupt controller shows at that moment, so the rule stands: pick a free
-line. If a real interrupt ever does
+control panel shows as `polled, irq IN USE`. That check can only tell whether
+a line is unmasked, not whether anything actually fires on it, so it sometimes
+refuses a line that would have worked — `[midi] irqforce=1` overrides it.
+
+Verify when you do. The panel reports `<< HW IRQ xN` when real interrupts
+arrive on the line VOPL3 holds, and each one was taken from whatever sent it.
+Forcing IRQ 9 on a machine where ACPI lives there swallowed 16 interrupts in a
+single boot, so a quiet-looking line is not necessarily a free one. If that
+counter moves, back the setting out and reboot — the line is in use. If a real interrupt ever does
 arrive on a line VOPL3 holds, the control panel flags it as `<< HW IRQ xN`.
 
 The engine answers the full command set, keeps time on the card's own clock

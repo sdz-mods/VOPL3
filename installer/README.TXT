@@ -168,7 +168,13 @@ MPU-401 INTELLIGENT MODE (on by default, no interrupt)
   ONLY SET THIS TO A LINE NOTHING ELSE USES. Windows will hand over an IRQ
   one of its own drivers is using: setting 7 on a machine whose HD-Audio is
   there hangs the boot. VOPL3 refuses a line that looks busy and stays
-  polled - but that check only sees what the interrupt controller shows at
+  polled instead - but that check only knows whether a line is unmasked, not
+  whether anything actually fires on it, so it sometimes refuses a line that
+  would have worked. [midi] irqforce=1 overrides it.
+  If you do that, watch the control panel: "<< HW IRQ xN" means real
+  interrupts are arriving on the line VOPL3 holds, and each was taken from
+  whatever device sent it. Forcing IRQ 9 where ACPI lives swallowed 16 of them
+  in one boot. If the counter moves, set it back and reboot.
 
   The IRQ, when you use one, MUST match what the game is configured for, and
   it cannot be 2: Windows does not hand out the cascade line, and the BIOS

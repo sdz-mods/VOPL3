@@ -295,7 +295,7 @@ static void load_rate(void)
  * VOPL3 has always had. The game must be set to the same IRQ, and NOT to
  * "IRQ 2", which cannot be served: VPICD refuses the cascade and the AT's
  * INT 71h -> INT 0Ah chain does not fire in a DOS box. */
-static void load_mpu_intelligent(DWORD out[2])
+static void load_mpu_intelligent(DWORD out[3])
 {
     char ini[MAX_PATH];
     UINT irq;
@@ -304,6 +304,7 @@ static void load_mpu_intelligent(DWORD out[2])
     irq    = GetPrivateProfileInt("midi", "irq", 9, ini);
     if (irq && (irq < 3 || irq > 15)) irq = 9;
     out[1] = irq;                      /* 0 = polled: claim no IRQ at all */
+    out[2] = GetPrivateProfileInt("midi", "irqforce", 0, ini) ? 1 : 0;
 }
 
 static void load_settings(void)

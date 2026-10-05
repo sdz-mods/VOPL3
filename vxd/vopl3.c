@@ -842,7 +842,10 @@ DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params
         case IOCTL_VOPL3_MPU_INTEL:     /* renderer: intelligent mode + IRQ */
             if (params->cbInBuffer >= 8) {
                 DWORD *in = (DWORD *)params->lpInBuffer;
-                mpu_i_enable(in[0], in[1]);   /* [0] on/off, [1] IRQ (0 = polled) */
+                /* [0] on/off, [1] IRQ (0 = polled), [2] claim a busy-looking
+                 * line anyway (optional, older renderers send only two) */
+                mpu_i_enable(in[0], in[1],
+                             (params->cbInBuffer >= 12) ? in[2] : 0);
                 rc = 0;
             }
             break;

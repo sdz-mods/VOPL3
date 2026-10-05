@@ -54,6 +54,8 @@
 #define VOPL3_MPU_PLAYING  0x0008u   /* the card's sequencer is running     */
 #define VOPL3_MPU_IRQ_BUSY 0x0010u   /* the configured IRQ was in use, so it
                                       * was NOT claimed - polled instead    */
+#define VOPL3_MPU_IRQ_HELD 0x0020u   /* the line IS ours, whether or not we
+                                      * have raised anything on it yet      */
 #define VOPL3_MPU_IRQ(s)   (((s) >> 8) & 0xFF)   /* 0 = polled, none claimed */
 /* PHYSICAL interrupts seen on the line we virtualized. Should always be 0:
  * there is no hardware behind this emulation. Anything else means a real

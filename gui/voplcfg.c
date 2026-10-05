@@ -598,13 +598,20 @@ static void refresh(void)
         sprintf(line, "mode:  UART  (switched after %u intelligent cmds)",
                 (unsigned)st[13]);
     } else {
-        char how[32];
-        if (st[15])                     sprintf(how, "irq %u x%u",
-                                                VOPL3_MPU_IRQ(st[14]),
-                                                (unsigned)st[15]);
-        else if (st[14] & VOPL3_MPU_IRQ_BUSY) strcpy(how, "polled, irq IN USE");
-        else if (VOPL3_MPU_IRQ(st[14])) strcpy(how, "polled");
-        else                            strcpy(how, "polled, no irq");
+        /* Three different things, and they used to read alike: the line is
+         * ours and busy, ours and idle (nothing has asked for an interrupt
+         * yet), or not ours at all. */
+        char how[40];
+        if (st[14] & VOPL3_MPU_IRQ_HELD) {
+            if (st[15]) sprintf(how, "irq %u x%u", VOPL3_MPU_IRQ(st[14]),
+                                (unsigned)st[15]);
+            else        sprintf(how, "irq %u held, none raised yet",
+                                VOPL3_MPU_IRQ(st[14]));
+        } else if (st[14] & VOPL3_MPU_IRQ_BUSY) {
+            sprintf(how, "polled, irq %u IN USE", VOPL3_MPU_IRQ(st[14]));
+        } else {
+            strcpy(how, "polled, no irq");
+        }
         sprintf(line, "mode:  intelligent%s, %s   intel=%u  req=%u",
                 (st[14] & VOPL3_MPU_PLAYING) ? ", playing" : "", how,
                 (unsigned)st[13], (unsigned)st[16]);

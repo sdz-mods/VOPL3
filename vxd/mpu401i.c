@@ -672,7 +672,7 @@ static void mpu_irq_clear(void)
  * refuses the cascade, and the AT's INT 71h -> INT 0Ah compatibility chain
  * does not fire in a DOS box (measured), so a game set to "IRQ 2" would never
  * hear us - it has to be told to use 9 (or 5, 7, 10...). */
-static DWORD mpu_irq_setup(DWORD irq)
+static DWORD mpu_irq_setup(DWORD irq, DWORD force)
 {
     if (irq < 3 || irq > 15) return 0;
     if (mpu.irq_handle && mpu.irq == irq) return 1;   /* already ours */
@@ -689,7 +689,7 @@ static DWORD mpu_irq_setup(DWORD irq)
      * it; an unused one is masked. This can only go on what the controller
      * shows at the moment we ask, but it turns "the machine no longer boots"
      * into "the interrupt was not claimed", which is the right way round. */
-    {
+    if (!force) {
         BYTE  mask = (BYTE)((irq < 8) ? inp(0x21) : inp(0xA1));
         DWORD bit  = (irq < 8) ? irq : (irq - 8);
         if (!(mask & (1u << bit))) {
@@ -786,7 +786,8 @@ static void mpu_i_stat(DWORD out[4])
            | (mpu.uart ? 4u : 0u)
            | (mpu.playing ? 8u : 0u)
            | (mpu.irq_busy ? 16u : 0u)
-           | ((mpu.irq_handle ? mpu.irq : 0) << 8)
+           | (mpu.irq_handle ? 32u : 0u)      /* the line is ours */
+           | ((mpu.irq & 0xFF) << 8)          /* what was configured */
            | ((mpu.n_hw < 0xFFFF ? mpu.n_hw : 0xFFFF) << 16);
     out[1] = mpu.n_irq;
     out[2] = mpu.n_req;
@@ -797,7 +798,7 @@ static void mpu_i_stat(DWORD out[4])
  * keeps time exactly the same, it just never raises a line, so a game that
  * polls the status port works and no IRQ is claimed from the machine. Games
  * that want interrupts need the number they are configured for. */
-static void mpu_i_enable(DWORD on, DWORD irq)
+static void mpu_i_enable(DWORD on, DWORD irq, DWORD force)
 {
     ser_str("VOPL3: MPU intelligent mode ");
     if (!on) {
@@ -809,7 +810,7 @@ static void mpu_i_enable(DWORD on, DWORD irq)
     if (irq) ser_dec(irq);
     ser_str("\n");            /* ser_ch exists only in -Serial builds */
     mpu.enabled = 1;
-    if (irq) mpu_irq_setup(irq);
+    if (irq) mpu_irq_setup(irq, force);
     mpu_reset_state();
     mpu.uart = 0;
 }
