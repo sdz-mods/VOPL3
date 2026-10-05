@@ -266,7 +266,10 @@ you need for a full-screen DOS game. Measured so far: *Monkey Island 2* and
 *A-10 Tank Killer* switch to UART; *King's Quest IV* stays in intelligent mode
 and polls.
 
-Not implemented: record mode, MIDI input, MT-32 SysEx pacing, and the metronome.
+Not implemented: record mode and MIDI input — recording means handing back
+MIDI that arrived at the card's input, and this bridge is one-way by design —
+MT-32 SysEx pacing, the metronome, and the conductor track, whose data is
+parsed but not acted on.
 
 ## Control panel (`VOPLCFG.EXE`)
 

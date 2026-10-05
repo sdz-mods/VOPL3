@@ -345,7 +345,12 @@ static void mpu_command(BYTE d)
                   ? (BYTE)mpu.playbuf[d & 7].counter : 0);
         return;
     }
-    if (d >= 0xE0 && d <= 0xEF) {           /* needs one more byte */
+    /* Only THESE take a parameter on the data port. Treating the whole
+     * 0xE0-0xEF range as parameterised would swallow the game's next data
+     * byte for the ones that take none, which silently corrupts whatever
+     * track was being filled. */
+    if (d == 0xE0 || d == 0xE1 || d == 0xE7 ||
+        d == 0xEC || d == 0xED || d == 0xEE || d == 0xEF) {
         mpu.command_byte = d;
         mpu_q(MSG_ACK);
         return;
@@ -398,7 +403,14 @@ static void mpu_command(BYTE d)
     }
 
     /* 0x01/0x02/0x03 are MIDI stop/start/continue, passed to the synth;
-     * bits 2 and 3 of a command below 0x30 stop and start playback. */
+     * bits 2 and 3 of a command below 0x30 stop and start playback.
+     *
+     * RECORD is not emulated, and cannot be: recording means handing the host
+     * MIDI that arrived at the card's input, and this bridge has no input -
+     * it carries DOS programs' output to a synth, one way. The record
+     * commands are ACKed like any other, so a program that starts recording
+     * simply never receives anything, which is what a real card with nothing
+     * plugged into its MIDI IN would do. */
     if (d < 0x30) {
         if (d == 0x01) mpu_play_byte(0xFC);
         if (d == 0x02) mpu_play_byte(0xFA);
@@ -416,6 +428,10 @@ static void mpu_command(BYTE d)
             mpu.last_pit = sys_time_pit();
             mpu.req_mask = 0;
             mpu.amask = mpu.tmask;
+            mpu.conductor = mpu.cond_set;   /* 0x8F before play means it runs */
+            mpu.cond_req = 0;
+            mpu.condbuf.type = T_OVERFLOW;
+            mpu.condbuf.counter = 0xF0;
             mpu_timer_arm();
             ser_str("VOPL3: MPU play, tracks ");
             ser_dec(mpu.tmask);
@@ -506,11 +522,27 @@ static void mpu_data(BYTE d)
     }
 
     t = mpu.track;
-    if (mpu.cond_req) {                     /* conductor data */
-        if (d < 0xF0) {
-            mpu.condbuf.counter = d;        /* timing byte */
-            mpu.cond_req = 0;
+
+    /* Conductor data: a timing byte, then one command byte. Both have to be
+     * consumed here - letting the second one fall through would push it into
+     * whichever track is current and corrupt that track's event.
+     *
+     * What the conductor carries (tempo changes, mostly) is accepted and NOT
+     * acted on: no game seen drives it, and guessing at its semantics would
+     * be worse than ignoring it. Staying in sync with the byte stream is the
+     * part that matters. */
+    if (mpu.cond_req) {
+        if (mpu.condbuf.type == T_OVERFLOW) {      /* expecting the timing */
+            if (d < 0xF0) {
+                mpu.condbuf.counter = d;
+                mpu.condbuf.type    = T_COMMAND;
+                mpu.condbuf.vlength = 0;
+            }
+            return;
         }
+        if (mpu.condbuf.vlength < sizeof(mpu.condbuf.value))
+            mpu.condbuf.value[mpu.condbuf.vlength++] = d;
+        mpu.cond_req = 0;                          /* one command per request */
         return;
     }
 
