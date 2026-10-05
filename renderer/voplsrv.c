@@ -97,6 +97,12 @@ static UINT      wave_cur = VOPL3_OUT_NONE;  /* device the last open got      */
 
 static HMIDIOUT  hmidi;            /* MPU-401 MIDI output, open only while used */
 static UINT      midi_dev = (UINT)MIDI_MAPPER;  /* device id; set from INI  */
+static DWORD     sysex_blocks, sysex_bytes, sysex_trunc;   /* published */
+static DWORD     sysex_waits;    /* ms spent waiting for a slot back       */
+static DWORD     sysex_tries;    /* messages handed to midi_long()         */
+static DWORD     sysex_err;      /* (stage << 16) | MMRESULT of the last
+                                  * refusal; stage 1 = prepare, 2 = send   */
+static BYTE      sysex_first[8]; /* header of the first SysEx of the run   */
 static int       midi_on;          /* mode includes MIDI (registry Midi=1)    */
 static int       fm_on;            /* VOPL3 plays FM (registry Fm == 1)       */
 static DWORD     fm_mode;          /* registry Fm as read (see reg_dword)     */
@@ -403,8 +409,23 @@ static DWORD reg_dword(const char *name, DWORD def)
 static BYTE run_status;            /* current MIDI running status 0x80..0xEF */
 static BYTE mmsg[3];
 static int  mneed, mhave;
-static BYTE sysex[1024];
-static int  sxlen, in_sysex;
+/* 4 KB: a single Roland timbre is ~250 bytes and banks arrive in chunks, so
+ * this is generous - but a game is free to send one enormous message, and
+ * what happens then has to be defined rather than discovered. */
+static BYTE sysex[4096];
+static int  sxlen, in_sysex, sysex_over;
+
+/* Buffers for the messages in flight. midiOutLongMsg hands the header to the
+ * driver and returns; the header AND its data have to stay put, unmodified,
+ * until the driver is finished with them (MHDR_DONE). The assembly buffer
+ * above cannot be that storage - the next F0 starts overwriting it - and a
+ * header on the stack is gone the moment we return. A small ring of slots
+ * means a burst of blocks each keeps its own copy alive, and only an unusually
+ * slow driver makes us wait for one back. */
+#define SX_SLOTS 8
+static MIDIHDR sxh[SX_SLOTS];
+static BYTE    sxb[SX_SLOTS][sizeof(sysex)];
+static int     sx_slot;
 
 static int midi_datacount(BYTE status)
 {
@@ -419,16 +440,111 @@ static void midi_short(BYTE s, BYTE d1, BYTE d2)
     if (hmidi) midiOutShortMsg(hmidi, (DWORD)s | ((DWORD)d1<<8) | ((DWORD)d2<<16));
 }
 
+/* Finish the message in the buffer: send it if it is whole, and if it is not,
+ * count it and throw it away. A truncated SysEx is not a smaller version of
+ * the same thing - an MT-32 handed half a timbre dump does something
+ * unpredictable with it, which is worse than hearing the default sound. */
+static void sysex_end(void);
+
 static void midi_long(BYTE *p, int n)
 {
-    MIDIHDR h;
-    if (!hmidi) return;
-    ZeroMemory(&h, sizeof(h));
-    h.lpData = (char *)p; h.dwBufferLength = h.dwBytesRecorded = (DWORD)n;
-    if (midiOutPrepareHeader(hmidi, &h, sizeof(h)) == MMSYSERR_NOERROR) {
-        midiOutLongMsg(hmidi, &h, sizeof(h));
-        midiOutUnprepareHeader(hmidi, &h, sizeof(h));
+    MIDIHDR *h = &sxh[sx_slot];
+
+    MMRESULT r;
+
+    if (!hmidi || n <= 0 || n > (int)sizeof(sxb[0])) return;
+
+    /* The first one, kept for the control panel: its header says which synth
+     * the game thinks it is driving (F0 41 10 16 12 is an MT-32 write,
+     * 20 00 00 after it is the LCD). Recorded on the ATTEMPT, because the
+     * question it answers - did the game send one - must not depend on the
+     * MIDI driver having accepted it. */
+    if (!sysex_tries++) {
+        int i;
+        for (i = 0; i < 8; i++) sysex_first[i] = (i < n) ? p[i] : 0;
     }
+
+    /* Reclaim this slot. Normally it finished long ago; if not, wait for it,
+     * because sending is the whole point and dropping a timbre block to save
+     * a few milliseconds trades an audible fault for an inaudible one.
+     * Unpreparing a header the driver still holds fails with
+     * MIDIERR_STILLPLAYING, which is exactly what the wait avoids. */
+    if (h->dwFlags & MHDR_PREPARED) {
+        /* How long is reasonable is set by the wire, not by a round number:
+         * DIN MIDI runs at 31250 baud, which is about one byte every 320 us,
+         * so a full 4 KB message legitimately takes over a second. Allow that
+         * much and no more - a driver that never reports completion at all
+         * must not cost a second per message, and the ms counted here are
+         * published so that driver shows up as a number instead of a pause. */
+        DWORD t0  = GetTickCount();
+        DWORD cap = 150 + (DWORD)h->dwBufferLength / 3;
+
+        while (!(h->dwFlags & MHDR_DONE) && (GetTickCount() - t0) < cap) {
+            sysex_waits++;
+            Sleep(1);
+        }
+        midiOutUnprepareHeader(hmidi, h, sizeof(*h));
+    }
+
+    ZeroMemory(h, sizeof(*h));
+    CopyMemory(sxb[sx_slot], p, (size_t)n);
+    h->lpData = (char *)sxb[sx_slot];
+    h->dwBufferLength = h->dwBytesRecorded = (DWORD)n;
+    /* Both of these are checked and reported. The version before this one
+     * ignored what midiOutLongMsg returned and counted the block anyway, so
+     * a synth that received nothing still looked like 54 messages sent -
+     * which is the one thing the counter existed to rule out. */
+    r = midiOutPrepareHeader(hmidi, h, sizeof(*h));
+    if (r != MMSYSERR_NOERROR) {
+        sysex_err = 0x10000u | (DWORD)r;
+        ZeroMemory(h, sizeof(*h));
+        return;
+    }
+    r = midiOutLongMsg(hmidi, h, sizeof(*h));
+    if (r != MMSYSERR_NOERROR) {
+        sysex_err = 0x20000u | (DWORD)r;
+        midiOutUnprepareHeader(hmidi, h, sizeof(*h));
+        ZeroMemory(h, sizeof(*h));
+        return;
+    }
+    sx_slot = (sx_slot + 1) % SX_SLOTS;
+
+    sysex_blocks++;
+    sysex_bytes += (DWORD)n;
+}
+
+/* Before closing the device: let anything still in flight finish and give the
+ * headers back, or midiOutClose refuses with MIDIERR_STILLPLAYING and the
+ * handle leaks. */
+static void sysex_release(void)
+{
+    int i;
+    for (i = 0; i < SX_SLOTS; i++) {
+        MIDIHDR *h = &sxh[i];
+        if (!(h->dwFlags & MHDR_PREPARED)) continue;
+        if (hmidi) {
+            /* Same wire-time bound as midi_long, and for the same reason:
+             * midiOutReset above should already have returned everything, so
+             * anything still waiting here is a driver that does not report
+             * completion - closing must not hang behind it. */
+            DWORD t0  = GetTickCount();
+            DWORD cap = 150 + (DWORD)h->dwBufferLength / 3;
+
+            while (!(h->dwFlags & MHDR_DONE) && (GetTickCount() - t0) < cap)
+                Sleep(1);
+            midiOutUnprepareHeader(hmidi, h, sizeof(*h));
+        }
+        ZeroMemory(h, sizeof(*h));
+    }
+    sx_slot = 0;
+}
+
+static void sysex_end(void)
+{
+    if (sysex_over) sysex_trunc++;          /* dropped: see above */
+    else            midi_long(sysex, sxlen);
+    sysex_over = 0;
+    in_sysex   = 0;
 }
 
 /* feed one raw MPU-401 byte through the MIDI parser */
@@ -437,9 +553,18 @@ static void midi_feed(BYTE b)
     if (b >= 0xF8) { midi_short(b, 0, 0); return; }   /* realtime: 1 byte, */
                                                       /* keeps running status */
     if (in_sysex) {
-        if (b == 0xF7)      { sysex[sxlen++] = b; midi_long(sysex, sxlen); in_sysex = 0; }
-        else if (b < 0x80)  { if (sxlen < (int)sizeof(sysex)) sysex[sxlen++] = b; }
-        else                { midi_long(sysex, sxlen); in_sysex = 0; midi_feed(b); }
+        if (b == 0xF7) {                       /* complete */
+            if (sxlen < (int)sizeof(sysex)) sysex[sxlen++] = b;
+            else                            sysex_over = 1;
+            sysex_end();
+        } else if (b < 0x80) {
+            if (sxlen < (int)sizeof(sysex)) sysex[sxlen++] = b;
+            else                            sysex_over = 1;
+        } else {                               /* a status byte cut it short */
+            sysex_over = 1;
+            sysex_end();
+            midi_feed(b);
+        }
         return;
     }
     if (b == 0xF0)          { run_status = 0; in_sysex = 1; sxlen = 0; sysex[sxlen++] = b; return; }
@@ -477,7 +602,12 @@ static void midi_open(void)
 
 static void midi_close(void)
 {
-    if (hmidi) { midiOutReset(hmidi); midiOutClose(hmidi); hmidi = NULL; }
+    if (hmidi) {
+        midiOutReset(hmidi);
+        sysex_release();
+        midiOutClose(hmidi);
+        hmidi = NULL;
+    }
 }
 
 /* Drain the VxD MIDI ring; open the synth on activity, release it when the
@@ -558,6 +688,13 @@ static void status_publish(int active)
     g_stat->active     = active;
     g_stat->out_open   = hwo ? 1 : 0;
     g_stat->out_dev    = wave_cur;
+    g_stat->sysex_blocks = sysex_blocks;
+    g_stat->sysex_bytes  = sysex_bytes;
+    g_stat->sysex_trunc  = sysex_trunc;
+    g_stat->sysex_waits  = sysex_waits;
+    g_stat->sysex_tries  = sysex_tries;
+    g_stat->sysex_err    = sysex_err;
+    CopyMemory(g_stat->sysex_first, sysex_first, sizeof(g_stat->sysex_first));
     g_stat->volume     = volume_pct;
     g_stat->midi_bytes = midi_total;
     g_stat->frames++;
@@ -799,6 +936,7 @@ static void audio_stop(void)
     audio_release();
     if (hmidi) {
         midiOutReset(hmidi);               /* all-notes-off on the synth */
+        sysex_release();
         midiOutClose(hmidi);
         hmidi = NULL;
     }
@@ -928,7 +1066,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
          * so - VPICD claims an IRQ for the life of the boot and has no way to
          * give it back. The VxD does no registry or INI reading of its own,
          * so the number comes from here. */
-        { DWORD mpu[2];
+        { DWORD mpu[3];
           load_mpu_intelligent(mpu);
           if (mpu[0]) DeviceIoControl(hvxd, IOCTL_VOPL3_MPU_INTEL, mpu,
                                       sizeof(mpu), NULL, 0, &ret, NULL); }

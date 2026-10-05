@@ -8,6 +8,7 @@ verifying the pipeline. Each has its own `build-*.ps1`; build outputs (`.EXE`,
 | Program | Runs on | What it does | Build |
 |---|---|---|---|
 | `ADLIBTST.ASM` | Win9x DOS box | Characterizes what is actually at the OPL ports (real chip vs SBEMUL's fake trap vs VOPL3): raw port reads, AdLib presence detection, OPL2/OPL3 signature, timer-period measurement. Writes `REPORT.TXT`. | `build-adlibtst.ps1` (**NASM**) |
+| `MTDISP.C` | Win9x DOS box | Writes a message to an MT-32's front-panel display through the MPU-401 port: one SysEx, nothing else, so the display is the receipt. Notes and SysEx leave Windows by two different calls (`midiOutShortMsg` and `midiOutLongMsg`) and the second can fail while music plays perfectly — a game cannot tell those apart, this can. Three modes cover the paths: UART, intelligent-mode `0xDF`, and intelligent-mode `0xD0` send-data (what Sierra's SCI drivers use). Prints the bytes it pushed and writes `C:\MTDISP.LOG`; read the result off the control panel's `sysex=` figures. | `build-mtdisp.ps1` |
 | `MPUTEST.C` | Win9x DOS box | Drives VOPL3's MPU-401 **intelligent mode** the way a game's own driver would: resets the card, checks it answers as an intelligent MPU (version 15h), hooks the IRQ, sets timebase and tempo, starts the on-board sequencer and answers its data requests with notes — then exercises the conductor track and a command that takes no parameter. Reports interrupt and clock-message counts and the measured clock interval, and writes `C:\MPUTEST.LOG`. Notes go out on MIDI channel 2, where a stock MT-32 puts Part 1. | `build-mputest.ps1` |
 | `OPLHANG.C` | Win9x DOS box | Keys on a sustaining OPL3 chord (on both register banks) and exits without a key-off, like a game that quits without silencing the chip. Close the DOS box afterwards: VOPL3 keys the notes off, so the chord fades out instead of playing on. `OPLHANG /OFF` keys off every voice. | `build-oplhang.ps1` |
 | `OPLTUNE.C` | Win9x DOS box | Plays a looping OPL3 arpeggio but *yields the CPU* between notes. If this is smooth while a game stutters, the bottleneck is CPU starvation of the renderer, not buffering. | `build-opltune.ps1` |
@@ -19,7 +20,7 @@ verifying the pipeline. Each has its own `build-*.ps1`; build outputs (`.EXE`,
 ## Toolchains
 
 - **Open Watcom 2.0** (`tools/ow`, same as the main build — see [../BUILD.md](../BUILD.md))
-  builds the C programs: the DOS ones (`OPLHANG`, `OPLTUNE`, `SBTEST`, `MPUTEST`) as 16-bit real-mode
+  builds the C programs: the DOS ones (`OPLHANG`, `OPLTUNE`, `SBTEST`, `MPUTEST`, `MTDISP`) as 16-bit real-mode
   `.EXE`, the Win32 ones (`OPLWIN32`, `VOPLSTAT`) as 32-bit.
 - **NASM** (<https://www.nasm.us/>) builds `ADLIBTST.ASM` into a DOS `.COM`. Put
   `nasm.exe` at `tools/nasm/nasm.exe` or on `PATH`.

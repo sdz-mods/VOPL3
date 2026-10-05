@@ -76,13 +76,14 @@
 /* --- renderer status shared memory ---------------------------------------- */
 #define VOPL3_STATUS_NAME  "VOPL3_STATUS"
 #define VOPL3_STATUS_MAGIC 0x33504F56u   /* 'VOP3' little-endian */
-#define VOPL3_STATUS_VER   4   /* 2: out_open claimed from reserved[0]
+#define VOPL3_STATUS_VER   5   /* 2: out_open claimed from reserved[0]
                                 * 3: fm_mode and rate claimed from the
                                 *    last two reserved words
                                 * 4: out_dev appended - the first version to
                                 *    GROW the struct, so a reader must map the
                                 *    whole section (not sizeof) and check ver
-                                *    before touching fields past rate */
+                                *    before touching fields past rate
+                                * 5: the sysex_* block appended         */
 
 /* out_dev values that are not a device index */
 #define VOPL3_OUT_MAPPER   0xFFFFFFFFu   /* the wave mapper (= WAVE_MAPPER) */
@@ -130,6 +131,28 @@ typedef struct {
                          * [renderer] device= names (see wave_dev_index and
                          * audio_open: a name nothing answers to, or a card
                          * that won't open, falls back to the mapper).   */
+    DWORD sysex_blocks; /* SysEx messages forwarded to the synth         */
+    DWORD sysex_bytes;  /* their total size                              */
+    DWORD sysex_trunc;  /* SysEx messages too big for the assembly buffer,
+                         * dropped rather than sent half-finished. Should
+                         * always be 0; anything else means a game sends
+                         * more in one message than 4 KB                 */
+    DWORD sysex_waits;  /* ms spent waiting for the MIDI driver to release a
+                         * buffer. Normally 0: it only moves when a game
+                         * sends SysEx faster than the driver takes it, and
+                         * then the driver, not VOPL3, is the pacing      */
+    BYTE  sysex_first[8];/* the first eight bytes of the first SysEx of the
+                         * run, which name the synth the game is addressing
+                         * (F0 41 10 16 12 = MT-32 write, and 20 00 00 after
+                         * it is its display). Zero means a game sent none */
+    DWORD sysex_tries;  /* SysEx messages a game sent us, whether or not the
+                         * MIDI driver accepted them. tries > blocks means
+                         * the driver is refusing them - see sysex_err     */
+    DWORD sysex_err;    /* the last refusal: (stage << 16) | MMRESULT, with
+                         * stage 1 = midiOutPrepareHeader, 2 = midiOutLongMsg.
+                         * A device that will not take long messages at all
+                         * fails here every time, and the MIDI Mapper is the
+                         * usual one - name the real device instead       */
 } VOPL3_STATUS;
 #endif
 

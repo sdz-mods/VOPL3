@@ -102,6 +102,35 @@ static void ini_path(void)
  * numbers move - so a whole session is a handful of lines, not one a second. */
 static int g_mpulog;
 
+/* winmm's error numbers, by name. "NOTSUPPORTED from send" says the device
+ * has no long-message support at all, which is the difference between a
+ * setting to change and a device to replace - and that is not something to
+ * work out from an integer. */
+static const char *mmerr(DWORD r)
+{
+    switch (r) {
+    case 1:  return "ERROR";
+    case 2:  return "BADDEVICEID";
+    case 3:  return "NOTENABLED";
+    case 4:  return "ALLOCATED";
+    case 5:  return "INVALHANDLE";
+    case 6:  return "NODRIVER";
+    case 7:  return "NOMEM";
+    case 8:  return "NOTSUPPORTED";
+    case 10: return "INVALFLAG";
+    case 11: return "INVALPARAM";
+    case 12: return "HANDLEBUSY";
+    case 64: return "UNPREPARED";
+    case 65: return "STILLPLAYING";
+    case 66: return "NOMAP";
+    case 67: return "NOTREADY";
+    case 68: return "NODEVICE";
+    case 69: return "INVALIDSETUP";
+    case 70: return "BADOPENMODE";
+    default: return NULL;
+    }
+}
+
 static void mpulog(const char *what)
 {
     char      path[MAX_PATH], stamp[32];
@@ -499,7 +528,9 @@ static void refresh(void)
     DWORD n = vxd_stat(st);
     VOPL3_STATUS *s = rstat();
     int live = renderer_live(s);
-    char line[160], drv[16], ren[16];
+    /* Room for every marker at once: the bytes: line can carry sysex
+     * figures, paced, TOO BIG, drvwait and REFUSED BY DRIVER together. */
+    char line[320], drv[16], ren[16];
     const char *be = "";
 
     /* --- Virtual OPL3 section --- */
@@ -579,10 +610,40 @@ static void refresh(void)
     if (n >= 56 && (st[12] & VOPL3_TRAP_MIDI_TRIED) &&
             (st[12] & (VOPL3_TRAP_MIDI_330 | VOPL3_TRAP_MIDI_331)))
         sprintf(line, "bytes: 330/331 TAKEN by another driver");
-    else
+    else {
         sprintf(line, "bytes: captured=%u  lost=%u%s  sent to synth=%u",
                 (unsigned)st[5], (unsigned)st[7], st[7] ? " << OVERRUN" : "",
                 live ? (unsigned)s->midi_bytes : 0u);
+        /* SysEx only when a game has actually sent some - it is the MT-32
+         * patch-dump case, and noise on the line the rest of the time. */
+        if (live && s->ver >= 5 && (s->sysex_blocks || s->sysex_tries))
+            sprintf(line + strlen(line), "  sysex=%u/%ub",
+                    (unsigned)s->sysex_blocks, (unsigned)s->sysex_bytes);
+        /* Sent is not the same as accepted. If the driver refused them, say
+         * so and say which call refused: a device that takes no long
+         * messages means no MT-32 patch data is reaching the synth at all,
+         * however healthy the note stream looks. */
+        if (live && s->ver >= 5 && s->sysex_tries > s->sysex_blocks) {
+            DWORD       code = s->sysex_err & 0xFFFFu;
+            const char *nm   = mmerr(code);
+            char        ec[24];
+
+            if (nm) strcpy(ec, nm);
+            else    sprintf(ec, "err %u", (unsigned)code);
+            sprintf(line + strlen(line), " << REFUSED x%u: %s %s",
+                    (unsigned)(s->sysex_tries - s->sysex_blocks),
+                    (s->sysex_err >> 16) == 1 ? "prepare" : "send", ec);
+        }
+        if (live && s->ver >= 5 && s->sysex_trunc)
+            sprintf(line + strlen(line), " << %u TOO BIG, DROPPED",
+                    (unsigned)s->sysex_trunc);
+        /* The MIDI driver made us wait for a buffer back: it is the only
+         * thing that paces a dump now, and a big number here is the driver's
+         * own latency, not ours. */
+        if (live && s->ver >= 5 && s->sysex_waits)
+            sprintf(line + strlen(line), " drvwait=%ums",
+                    (unsigned)s->sysex_waits);
+    }
     upd(g_mid_s1, g_p_mid_s1, sizeof(g_p_mid_s1), line);
 
     /* Which MPU path a game actually used. VOPL3 serves UART, polled
@@ -635,16 +696,45 @@ static void refresh(void)
                      | (st[13] ? 0x40000u : 0u);     /* has used intelligent mode */
         if (key != prev_key ||
                 (counts != last_counts && (now - last_ms) > 15000)) {
-            char l2[220];
+            char l2[512];          /* line[] plus the log-only counters */
             /* The renderer's own counter too: bytes actually handed to
              * midiOut. If the driver's numbers move and this one does not,
              * the problem is downstream of the MPU emulation; if both move
              * and nothing is audible, it is the synth or the channel. */
-            sprintf(l2, "%s   polls=%u sent=%u synth=%s",
+            sprintf(l2, "%s   polls=%u sent=%u synth=%s sysex=%u/%u",
                     line, (unsigned)st[17],
                     live ? (unsigned)s->midi_bytes : 0u,
-                    !live ? "?" : (s->synth_open ? "open" : "closed"));
+                    !live ? "?" : (s->synth_open ? "open" : "closed"),
+                    (live && s->ver >= 5) ? (unsigned)s->sysex_blocks : 0u,
+                    (live && s->ver >= 5) ? (unsigned)s->sysex_bytes : 0u);
+            if (live && s->ver >= 5 && s->sysex_waits)
+                sprintf(l2 + strlen(l2), " drvwait=%ums",
+                        (unsigned)s->sysex_waits);
+            if (live && s->ver >= 5 && s->sysex_tries) {
+                const char *nm = mmerr(s->sysex_err & 0xFFFFu);
+                sprintf(l2 + strlen(l2), " sxtry=%u sxerr=%lx(%s) sxdev=%u",
+                        (unsigned)s->sysex_tries, (unsigned long)s->sysex_err,
+                        nm ? nm : "?", (unsigned)s->midi_dev);
+            }
             mpulog(l2);
+
+            /* Which synth the game addressed with its first SysEx. An MT-32
+             * title that never shows its banner has either not sent one
+             * (nothing logged here) or sent one that the synth ignored
+             * (logged, and then the synth is not an MT-32). */
+            if (live && s->ver >= 5 && (s->sysex_blocks || s->sysex_tries)) {
+                static DWORD logged_sx;
+                if (!logged_sx) {
+                    char  t[80], *q;
+                    DWORD i;
+                    logged_sx = 1;
+                    strcpy(t, "  sysex first:");
+                    q = t + strlen(t);
+                    for (i = 0; i < 8; i++)
+                        { sprintf(q, " %02X", s->sysex_first[i]); q += 3; }
+                    mpulog(t);
+                }
+            }
 
             /* The commands themselves. The first 32 show how the game's
              * driver sets the card up; the rolling last 16 show what it

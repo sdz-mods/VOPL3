@@ -274,8 +274,13 @@ and polls.
 
 Not implemented: record mode and MIDI input — recording means handing back
 MIDI that arrived at the card's input, and this bridge is one-way by design —
-MT-32 SysEx pacing, the metronome, and the conductor track, whose data is
-parsed but not acted on.
+the metronome, and the conductor track, whose data is parsed but not acted on.
+SysEx is forwarded at full speed. A patch dump is measured in blocks and
+bytes on the control panel, and a Roland timbre upload of a few kilobytes
+arrives whole: Police Quest II's 2.7 KB patch goes out as about a hundred
+blocks with nothing dropped. Spacing the blocks apart is not implemented —
+doing it would mean holding the game at the port, since the bytes have
+nowhere else to wait.
 
 ## Control panel (`VOPLCFG.EXE`)
 
