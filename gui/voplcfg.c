@@ -611,8 +611,10 @@ static void refresh(void)
             (st[12] & (VOPL3_TRAP_MIDI_330 | VOPL3_TRAP_MIDI_331)))
         sprintf(line, "bytes: 330/331 TAKEN by another driver");
     else {
-        sprintf(line, "bytes: captured=%u  lost=%u%s  sent to synth=%u",
-                (unsigned)st[5], (unsigned)st[7], st[7] ? " << OVERRUN" : "",
+        /* Short field names on purpose: this control is 368 px of 8 pt text,
+         * about sixty characters, and every marker below competes for it. */
+        sprintf(line, "bytes: cap=%u lost=%u%s sent=%u",
+                (unsigned)st[5], (unsigned)st[7], st[7] ? " OVERRUN" : "",
                 live ? (unsigned)s->midi_bytes : 0u);
         /* SysEx only when a game has actually sent some - it is the MT-32
          * patch-dump case, and noise on the line the rest of the time. */
@@ -656,7 +658,7 @@ static void refresh(void)
         /* The output queue is silent while it is doing its job; it only earns
          * a word on the panel when it could not. */
         if (live && s->ver >= 6 && s->outq_drops)
-            sprintf(line + strlen(line), " << %u QUEUED DROPPED",
+            sprintf(line + strlen(line), " << %u QDROP",
                     (unsigned)s->outq_drops);
     }
     upd(g_mid_s1, g_p_mid_s1, sizeof(g_p_mid_s1), line);
@@ -716,8 +718,13 @@ static void refresh(void)
              * midiOut. If the driver's numbers move and this one does not,
              * the problem is downstream of the MPU emulation; if both move
              * and nothing is audible, it is the synth or the channel. */
-            sprintf(l2, "%s   polls=%u sent=%u synth=%s sysex=%u/%u",
-                    line, (unsigned)st[17],
+            /* cap=/lost= are the VxD's own figures from the bytes: line,
+             * which `line` no longer holds by the time we get here - and
+             * lost= is the one number that says whether the ring overran,
+             * so it has to be in the file for a full-screen game. */
+            sprintf(l2, "%s   cap=%u lost=%u%s polls=%u sent=%u synth=%s sysex=%u/%u",
+                    line, (unsigned)st[5], (unsigned)st[7],
+                    st[7] ? " OVERRUN" : "", (unsigned)st[17],
                     live ? (unsigned)s->midi_bytes : 0u,
                     !live ? "?" : (s->synth_open ? "open" : "closed"),
                     (live && s->ver >= 5) ? (unsigned)s->sysex_blocks : 0u,
@@ -819,6 +826,12 @@ static void refresh(void)
 }
 
 /* --------------------------------------------------------------- UI build */
+/* A plain STATIC word-wraps, and these are 18 px apart: one over-long
+ * line draws across the one below it, which is exactly how a long error
+ * message became unreadable. Clip it to one line with an ellipsis -
+ * the log keeps the full text. */
+#define SS_1LINE (SS_LEFTNOWORDWRAP | SS_ENDELLIPSIS)
+
 static HWND mk(HWND p, const char *cls, const char *txt, DWORD st,
                int x, int y, int w, int h, int id)
 {
@@ -881,10 +894,10 @@ static void build_ui(HWND w)
                    26 + lw, 172, 362 - lw, 200, ID_OUT);
     }
 
-    g_opl_l1 = mk(w, "STATIC", "", 0, 20, 204, 368, 18, 0);
-    g_opl_l2 = mk(w, "STATIC", "", 0, 20, 222, 368, 18, 0);
-    g_opl_s1 = mk(w, "STATIC", "", 0, 20, 244, 368, 18, 0);
-    g_opl_s2 = mk(w, "STATIC", "", 0, 20, 262, 368, 18, 0);
+    g_opl_l1 = mk(w, "STATIC", "", SS_1LINE, 20, 204, 368, 18, 0);
+    g_opl_l2 = mk(w, "STATIC", "", SS_1LINE, 20, 222, 368, 18, 0);
+    g_opl_s1 = mk(w, "STATIC", "", SS_1LINE, 20, 244, 368, 18, 0);
+    g_opl_s2 = mk(w, "STATIC", "", SS_1LINE, 20, 262, 368, 18, 0);
 
     /* ============ MPU-401 MIDI bridge ============ */
     mk(w, "BUTTON", "MPU-401 MIDI bridge", BS_GROUPBOX, 8, 296, 388, 208, 0);
@@ -901,15 +914,15 @@ static void build_ui(HWND w)
     g_dev = mk(w, "COMBOBOX", "", WS_BORDER | WS_VSCROLL | CBS_DROPDOWNLIST | WS_TABSTOP,
                20, 418, 368, 200, ID_DEV);
 
-    g_mid_l1 = mk(w, "STATIC", "", 0, 20, 444, 368, 18, 0);
-    g_mid_s1 = mk(w, "STATIC", "", 0, 20, 462, 368, 18, 0);
-    g_mid_s2 = mk(w, "STATIC", "", 0, 20, 480, 368, 18, 0);
+    g_mid_l1 = mk(w, "STATIC", "", SS_1LINE, 20, 444, 368, 18, 0);
+    g_mid_s1 = mk(w, "STATIC", "", SS_1LINE, 20, 462, 368, 18, 0);
+    g_mid_s2 = mk(w, "STATIC", "", SS_1LINE, 20, 480, 368, 18, 0);
 
     /* ============ bottom ============ */
     mk(w, "BUTTON", "Apply", 0, 157, 512, 90, 26, ID_APPLY);
-    g_msg = mk(w, "STATIC", "", 0, 20, 544, 368, 18, 0);
+    g_msg = mk(w, "STATIC", "", SS_1LINE, 20, 544, 368, 18, 0);
     mk(w, "STATIC", "", SS_ETCHEDHORZ, 8, 566, 388, 2, 0);
-    g_rev = mk(w, "STATIC", "", 0, 20, 574, 368, 18, 0);
+    g_rev = mk(w, "STATIC", "", SS_1LINE, 20, 574, 368, 18, 0);
 
     fill_devices();
     fill_outputs();
