@@ -805,7 +805,7 @@ static DWORD sys_vm_handle(void)
  * printed as a string by readers. Keep in sync with vopl3ipc.h VOPL3_REV
  * (kept literal here so the VxD's minimal build needs no extra include). */
 #ifndef VOPL3_VXD_REV                   /* overridable (-D...) to tag test builds */
-#define VOPL3_VXD_REV 0x00383041        /* "A08" */
+#define VOPL3_VXD_REV 0x00393041        /* "A09" */
 #endif
 
 DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params)
