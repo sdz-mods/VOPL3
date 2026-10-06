@@ -76,7 +76,7 @@
 /* --- renderer status shared memory ---------------------------------------- */
 #define VOPL3_STATUS_NAME  "VOPL3_STATUS"
 #define VOPL3_STATUS_MAGIC 0x33504F56u   /* 'VOP3' little-endian */
-#define VOPL3_STATUS_VER   6   /* 2: out_open claimed from reserved[0]
+#define VOPL3_STATUS_VER   7   /* 2: out_open claimed from reserved[0]
                                 * 3: fm_mode and rate claimed from the
                                 *    last two reserved words
                                 * 4: out_dev appended - the first version to
@@ -84,7 +84,8 @@
                                 *    whole section (not sizeof) and check ver
                                 *    before touching fields past rate
                                 * 5: the sysex_* block appended
-                                * 6: the MIDI output queue's counters     */
+                                * 6: the MIDI output queue's counters
+                                * 7: short-message refusals + queue retries */
 
 /* out_dev values that are not a device index */
 #define VOPL3_OUT_MAPPER   0xFFFFFFFFu   /* the wave mapper (= WAVE_MAPPER) */
@@ -151,9 +152,8 @@ typedef struct {
                          * the driver is refusing them - see sysex_err     */
     DWORD sysex_err;    /* the last refusal: (stage << 16) | MMRESULT, with
                          * stage 1 = midiOutPrepareHeader, 2 = midiOutLongMsg.
-                         * A device that will not take long messages at all
-                         * fails here every time, and the MIDI Mapper is the
-                         * usual one - name the real device instead       */
+                         * A device that will not take long messages at
+                         * all fails here every time.                     */
     DWORD sysex_holds;  /* times a flush stopped early to keep [midi]
                          * sysexdelay='s gap. 0 with the setting on means
                          * nothing ever came close enough to pace        */
@@ -165,6 +165,15 @@ typedef struct {
                          * Should always be 0 - anything else means a MIDI
                          * device so slow that 64 KB of backlog was not
                          * enough, and DOS-side audio will have suffered */
+    DWORD outq_retry;   /* times the device answered MIDIERR_NOTREADY and the
+                         * message was left queued for the next pass. A few
+                         * is a busy device; a flood is one that never became
+                         * ready, and then nothing is getting through      */
+    DWORD short_fails;  /* note/controller messages the device refused. The
+                         * note stream is most of the traffic, so this being
+                         * unreported was how a dead device could still look
+                         * like a healthy byte count                      */
+    DWORD short_err;    /* MMRESULT of the last one                        */
 } VOPL3_STATUS;
 #endif
 

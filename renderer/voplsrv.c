@@ -461,6 +461,19 @@ static int     sx_slot;
 static BYTE      outq[OUTQ_SIZE];
 static DWORD     outq_head, outq_tail;   /* monotonic; mask to index */
 static DWORD     outq_peak, outq_drops;  /* published */
+static DWORD     outq_retry;             /* device said NOTREADY; kept it */
+/* A MIDI driver is entitled to send window messages while it works, and a
+ * SendMessage PUMPS the sending thread's queue - so our own window procedure
+ * can run in the middle of a midiOut call, from inside it. It closes the
+ * device on a live device change and resets it on a panic, either of which
+ * would pull hmidi out from under the call in progress. So: note when we are
+ * inside the driver, refuse to re-enter, and defer anything that touches the
+ * device until we are out. */
+#define MDEFER_CLOSE 1
+#define MDEFER_PANIC 2
+static int       in_midi_out;            /* inside a midiOut call */
+static int       midi_defer;             /* MDEFER_* to apply once out */
+static DWORD     short_fails, short_err; /* midiOutShortMsg refusals      */
 
 static void outq_put(const BYTE *p, int n)
 {
@@ -488,7 +501,10 @@ static int outq_peek(void)
     return outq[(outq_tail + 2) & (OUTQ_SIZE - 1)];
 }
 
-static int outq_get(BYTE *p, int max)
+/* Copy the record at the head WITHOUT consuming it. The device is allowed to
+ * say MIDIERR_NOTREADY, which means "ask again" - so a message is only popped
+ * once it has actually been taken, and the order behind it is never disturbed. */
+static int outq_peek_msg(BYTE *p, int max)
 {
     DWORD used = outq_head - outq_tail;
     int   n, i;
@@ -501,11 +517,14 @@ static int outq_get(BYTE *p, int max)
         outq_drops++;
         return 0;
     }
-    outq_tail += 2;
     for (i = 0; i < n; i++)
-        p[i] = outq[(outq_tail + (DWORD)i) & (OUTQ_SIZE - 1)];
-    outq_tail += (DWORD)n;
+        p[i] = outq[(outq_tail + 2 + (DWORD)i) & (OUTQ_SIZE - 1)];
     return n;
+}
+
+static void outq_pop(int n)
+{
+    outq_tail += (DWORD)n + 2;
 }
 
 static int midi_datacount(BYTE status)
@@ -537,13 +556,13 @@ static void midi_short(BYTE s, BYTE d1, BYTE d2)
  * unpredictable with it, which is worse than hearing the default sound. */
 static void sysex_end(void);
 
-static void midi_long(BYTE *p, int n)
+static MMRESULT midi_long(BYTE *p, int n)
 {
     MIDIHDR *h = &sxh[sx_slot];
 
     MMRESULT r;
 
-    if (!hmidi || n <= 0 || n > (int)sizeof(sxb[0])) return;
+    if (!hmidi || n <= 0 || n > (int)sizeof(sxb[0])) return MMSYSERR_INVALPARAM;
 
     /* The first one, kept for the control panel: its header says which synth
      * the game thinks it is driving (F0 41 10 16 12 is an MT-32 write,
@@ -589,19 +608,20 @@ static void midi_long(BYTE *p, int n)
     if (r != MMSYSERR_NOERROR) {
         sysex_err = 0x10000u | (DWORD)r;
         ZeroMemory(h, sizeof(*h));
-        return;
+        return r;
     }
     r = midiOutLongMsg(hmidi, h, sizeof(*h));
     if (r != MMSYSERR_NOERROR) {
         sysex_err = 0x20000u | (DWORD)r;
         midiOutUnprepareHeader(hmidi, h, sizeof(*h));
         ZeroMemory(h, sizeof(*h));
-        return;
+        return r;
     }
     sx_slot = (sx_slot + 1) % SX_SLOTS;
 
     sysex_blocks++;
     sysex_bytes += (DWORD)n;
+    return MMSYSERR_NOERROR;
 }
 
 /* Before closing the device: let anything still in flight finish and give the
@@ -706,12 +726,20 @@ static void midi_close(void)
     outq_tail = outq_head;
 }
 
-static void out_short(const BYTE *p, int n)
+/* Checked, like the long path. Ignoring this is how a device that accepts
+ * nothing at all still looked like a healthy byte count while the synth sat
+ * silent - the note stream is most of the traffic, so it is the last place
+ * that should be unreported. */
+static MMRESULT out_short(const BYTE *p, int n)
 {
-    DWORD m = (DWORD)p[0];
+    DWORD    m = (DWORD)p[0];
+    MMRESULT r;
+
     if (n > 1) m |= (DWORD)p[1] << 8;
     if (n > 2) m |= (DWORD)p[2] << 16;
-    midiOutShortMsg(hmidi, m);
+    r = midiOutShortMsg(hmidi, m);
+    if (r != MMSYSERR_NOERROR) { short_fails++; short_err = (DWORD)r; }
+    return r;
 }
 
 /* Hand queued messages to the device, for at most `budget` ms. The budget is
@@ -730,24 +758,42 @@ static void midi_flush(DWORD budget)
     int   n, first;
 
     if (outq_head == outq_tail) return;
+    if (in_midi_out) return;                   /* re-entered: not from here */
     if (!hmidi) midi_open();
     if (!hmidi) {                              /* nowhere to send it */
-        while (outq_get(msg, sizeof(msg)) > 0) outq_drops++;
+        while ((n = outq_peek_msg(msg, sizeof(msg))) > 0) {
+            outq_pop(n);
+            outq_drops++;
+        }
         return;
     }
+    in_midi_out = 1;
     while ((first = outq_peek()) >= 0) {
+        MMRESULT r;
+
         if (first == 0xF0 && sysex_gap && sysex_last &&
                 (GetTickCount() - sysex_last) < sysex_gap) {
             sysex_holds++;
             break;
         }
-        n = outq_get(msg, sizeof(msg));
+        n = outq_peek_msg(msg, sizeof(msg));
         if (n <= 0) break;
-        if (msg[0] == 0xF0) midi_long(msg, n);
-        else                out_short(msg, n);
-        midi_total += (DWORD)n;
+        r = (msg[0] == 0xF0) ? midi_long(msg, n) : out_short(msg, n);
+        if (r == MIDIERR_NOTREADY) {
+            /* The device asked to be called back. Leave the message exactly
+             * where it is and try again next wake - dropping it would lose a
+             * note or a block of patch data for no reason, and taking the one
+             * behind it would reorder the stream. */
+            outq_retry++;
+            break;
+        }
+        outq_pop(n);                           /* taken (or refused for good) */
+        if (r == MMSYSERR_NOERROR)
+            midi_total += (DWORD)n;            /* "sent" means accepted */
+        if (!hmidi) break;                     /* closed under us after all */
         if ((GetTickCount() - t0) >= budget) break;
     }
+    in_midi_out = 0;
 }
 
 /* Drain the VxD MIDI ring into the queue, then send from it; open the synth on
@@ -758,6 +804,14 @@ static void service_midi(void)
 {
     DWORD ret = 0, i;
     if (!midi_on) return;
+    if (in_midi_out) return;                   /* nested pump: leave it alone */
+    if (midi_defer) {                          /* a device change or a panic
+                                                * that arrived mid-send */
+        int d = midi_defer;
+        midi_defer = 0;
+        if (d & MDEFER_CLOSE)      midi_close();
+        else if (hmidi)            midiOutReset(hmidi);
+    }
     if (!DeviceIoControl(hvxd, IOCTL_VOPL3_MIDI_DRAIN, NULL, 0,
                          midibuf, sizeof(midibuf), &ret, NULL))
         ret = 0;
@@ -834,6 +888,9 @@ static void status_publish(int active)
     g_stat->sysex_holds  = sysex_holds;
     g_stat->outq_peak    = outq_peak;
     g_stat->outq_drops   = outq_drops;
+    g_stat->outq_retry   = outq_retry;
+    g_stat->short_fails  = short_fails;
+    g_stat->short_err    = short_err;
     g_stat->sysex_waits  = sysex_waits;
     g_stat->sysex_tries  = sysex_tries;
     g_stat->sysex_err    = sysex_err;
@@ -1104,7 +1161,10 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         /* Volume applies instantly (gain256 is read live per buffer). If the
          * MIDI device changed while the synth is open, release it so the next
          * MIDI byte reopens on the newly chosen device - no restart needed. */
-        if (hmidi && midi_dev != olddev) midi_close();
+        if (hmidi && midi_dev != olddev) {
+            if (in_midi_out) midi_defer |= MDEFER_CLOSE;   /* not right now */
+            else             midi_close();
+        }
         /* The FM output device can only be changed by reopening the stream.
          * Release it here and hand the reopen to the loop's idleclose= path,
          * which already knows how to take the device back (including retrying
@@ -1121,7 +1181,9 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
     if (g_msg_panic && msg == g_msg_panic) {
-        if (hmidi) midiOutReset(hmidi);  /* all notes off; keep the synth open */
+        /* all notes off; keep the synth open */
+        if (in_midi_out)   midi_defer |= MDEFER_PANIC;
+        else if (hmidi)    midiOutReset(hmidi);
         return 0;
     }
     switch (msg) {

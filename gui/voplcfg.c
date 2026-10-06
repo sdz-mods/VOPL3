@@ -630,9 +630,19 @@ static void refresh(void)
 
             if (nm) strcpy(ec, nm);
             else    sprintf(ec, "err %u", (unsigned)code);
-            sprintf(line + strlen(line), " << REFUSED x%u: %s %s",
-                    (unsigned)(s->sysex_tries - s->sysex_blocks),
-                    (s->sysex_err >> 16) == 1 ? "prepare" : "send", ec);
+            sprintf(line + strlen(line), " << SysEx x%u %s",
+                    (unsigned)(s->sysex_tries - s->sysex_blocks), ec);
+        }
+        /* The note stream refused is worse news than SysEx refused, and it
+         * is the case where everything else on this line still looks fine. */
+        if (live && s->ver >= 7 && s->short_fails) {
+            const char *nm = mmerr(s->short_err);
+            char        ec[24];
+
+            if (nm) strcpy(ec, nm);
+            else    sprintf(ec, "err %u", (unsigned)s->short_err);
+            sprintf(line + strlen(line), " << notes x%u %s",
+                    (unsigned)s->short_fails, ec);
         }
         if (live && s->ver >= 5 && s->sysex_trunc)
             sprintf(line + strlen(line), " << %u TOO BIG, DROPPED",
@@ -719,6 +729,10 @@ static void refresh(void)
                 sprintf(l2 + strlen(l2), " qpeak=%u qdrop=%u paced=%u",
                         (unsigned)s->outq_peak, (unsigned)s->outq_drops,
                         (unsigned)s->sysex_holds);
+            if (live && s->ver >= 7)
+                sprintf(l2 + strlen(l2), " qretry=%u shortfail=%u(%lx)",
+                        (unsigned)s->outq_retry, (unsigned)s->short_fails,
+                        (unsigned long)s->short_err);
             if (live && s->ver >= 5 && s->sysex_tries) {
                 const char *nm = mmerr(s->sysex_err & 0xFFFFu);
                 sprintf(l2 + strlen(l2), " sxtry=%u sxerr=%lx(%s) sxdev=%u",
