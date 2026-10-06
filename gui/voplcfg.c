@@ -643,6 +643,11 @@ static void refresh(void)
         if (live && s->ver >= 5 && s->sysex_waits)
             sprintf(line + strlen(line), " drvwait=%ums",
                     (unsigned)s->sysex_waits);
+        /* The output queue is silent while it is doing its job; it only earns
+         * a word on the panel when it could not. */
+        if (live && s->ver >= 6 && s->outq_drops)
+            sprintf(line + strlen(line), " << %u QUEUED DROPPED",
+                    (unsigned)s->outq_drops);
     }
     upd(g_mid_s1, g_p_mid_s1, sizeof(g_p_mid_s1), line);
 
@@ -710,6 +715,10 @@ static void refresh(void)
             if (live && s->ver >= 5 && s->sysex_waits)
                 sprintf(l2 + strlen(l2), " drvwait=%ums",
                         (unsigned)s->sysex_waits);
+            if (live && s->ver >= 6)
+                sprintf(l2 + strlen(l2), " qpeak=%u qdrop=%u paced=%u",
+                        (unsigned)s->outq_peak, (unsigned)s->outq_drops,
+                        (unsigned)s->sysex_holds);
             if (live && s->ver >= 5 && s->sysex_tries) {
                 const char *nm = mmerr(s->sysex_err & 0xFFFFu);
                 sprintf(l2 + strlen(l2), " sxtry=%u sxerr=%lx(%s) sxdev=%u",

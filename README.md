@@ -272,15 +272,23 @@ you need for a full-screen DOS game. Measured so far: *Monkey Island 2* and
 *A-10 Tank Killer* switch to UART; *King's Quest IV* stays in intelligent mode
 and polls.
 
+Captured bytes are parsed into whole MIDI messages and queued, and the queue is
+emptied into the MIDI device separately, a few milliseconds per pass. That split
+matters: a DOS game writing to a trapped port cannot be told to wait, so if the
+renderer stopped draining the VxD's ring while a MIDI driver took its time, the
+ring would overrun and the game's music would lose bytes. Short messages and
+SysEx share one queue in arrival order, so a note can never overtake the SysEx
+that loaded the patch it plays on. The control panel reports how deep the queue
+ever got.
+
+For a synth that drops SysEx while it is still digesting the last block,
+`[midi] sysexdelay=<ms>` spaces the blocks apart. Leave it at 0 unless you have
+that symptom.
+
 Not implemented: record mode and MIDI input — recording means handing back
 MIDI that arrived at the card's input, and this bridge is one-way by design —
-the metronome, and the conductor track, whose data is parsed but not acted on.
-SysEx is forwarded at full speed. A patch dump is measured in blocks and
-bytes on the control panel, and a Roland timbre upload of a few kilobytes
-arrives whole: Police Quest II's 2.7 KB patch goes out as about a hundred
-blocks with nothing dropped. Spacing the blocks apart is not implemented —
-doing it would mean holding the game at the port, since the bytes have
-nowhere else to wait.
+the metronome, and the conductor track, whose data is parsed but not acted
+on.
 
 ## Control panel (`VOPLCFG.EXE`)
 

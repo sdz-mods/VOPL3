@@ -97,7 +97,10 @@ static UINT      wave_cur = VOPL3_OUT_NONE;  /* device the last open got      */
 
 static HMIDIOUT  hmidi;            /* MPU-401 MIDI output, open only while used */
 static UINT      midi_dev = (UINT)MIDI_MAPPER;  /* device id; set from INI  */
+static UINT      sysex_gap;        /* [midi] sysexdelay=; ms, 0 = off        */
+static DWORD     sysex_last;       /* tick the last SysEx went out           */
 static DWORD     sysex_blocks, sysex_bytes, sysex_trunc;   /* published */
+static DWORD     sysex_holds;    /* flushes stopped early to pace a dump   */
 static DWORD     sysex_waits;    /* ms spent waiting for a slot back       */
 static DWORD     sysex_tries;    /* messages handed to midi_long()         */
 static DWORD     sysex_err;      /* (stage << 16) | MMRESULT of the last
@@ -328,6 +331,15 @@ static void load_settings(void)
     { UINT d = GetPrivateProfileInt("midi", "device", 0xFFFF, ini);
       midi_dev = (d == 0xFFFF) ? (UINT)MIDI_MAPPER : d; }
 
+    /* [midi] sysexdelay=<ms> (0 = off, clamped to 500): smallest gap between
+     * two SysEx blocks, for a synth that drops one arriving while it is still
+     * working through the last. The output queue is what makes it safe to
+     * honour at all: the bytes wait there instead of in the VxD's ring, which
+     * is where the two earlier attempts went wrong. */
+    { UINT g = GetPrivateProfileInt("midi", "sysexdelay", 0, ini);
+      if (g > 500) g = 500;
+      sysex_gap = g; }
+
     /* [renderer] device=<sound card name>: which waveOut device the FM plays
      * on. Empty (the default) means the wave mapper, i.e. whatever Windows
      * uses for preferred playback. Stored as the device's NAME rather than
@@ -427,6 +439,75 @@ static MIDIHDR sxh[SX_SLOTS];
 static BYTE    sxb[SX_SLOTS][sizeof(sysex)];
 static int     sx_slot;
 
+/* ===================== MIDI output queue =====================
+ * Draining the VxD's ring and sending to the MIDI device used to be one job,
+ * which meant anything slow in the device's driver cost DOS-side bytes: the
+ * renderer sat inside midiOutLongMsg while the game kept writing to the
+ * trapped port, and the ring - 4 KB, with no way to tell the game to wait -
+ * overran.
+ *
+ * So the two jobs are separate. service_midi() empties the ring into this
+ * queue and touches no device; midi_flush() hands messages to midiOut
+ * afterwards, on a time budget. However slow the device is, the ring still
+ * gets emptied every wake - the backlog waits here, where there is room for
+ * it, instead of there, where there is not.
+ *
+ * Records are length-prefixed COMPLETE messages, short and long together in
+ * one queue, so the order the game wrote is the order the synth hears. That
+ * matters: a note must not overtake the SysEx that loaded the patch it plays
+ * on. 64 KB holds sixteen of the largest SysEx this renderer will assemble. */
+#define OUTQ_SIZE 65536            /* power of two */
+#define MIDI_FLUSH_MS 5            /* per wake; the loop wakes every ~10 ms */
+static BYTE      outq[OUTQ_SIZE];
+static DWORD     outq_head, outq_tail;   /* monotonic; mask to index */
+static DWORD     outq_peak, outq_drops;  /* published */
+
+static void outq_put(const BYTE *p, int n)
+{
+    DWORD used = outq_head - outq_tail;
+    DWORD i;
+
+    if (n <= 0 || n > 0xFFFF) return;
+    if (used + (DWORD)n + 2 > OUTQ_SIZE) {   /* the device is hopelessly behind */
+        outq_drops++;
+        return;
+    }
+    outq[outq_head++ & (OUTQ_SIZE - 1)] = (BYTE)(n & 0xFF);
+    outq[outq_head++ & (OUTQ_SIZE - 1)] = (BYTE)((n >> 8) & 0xFF);
+    for (i = 0; i < (DWORD)n; i++)
+        outq[outq_head++ & (OUTQ_SIZE - 1)] = p[i];
+    used = outq_head - outq_tail;
+    if (used > outq_peak) outq_peak = used;  /* how far behind it ever got */
+}
+
+/* The next record's first byte, without consuming it - enough to tell a SysEx
+ * from a short message, which is what the pacing below needs. -1 = empty. */
+static int outq_peek(void)
+{
+    if (outq_head - outq_tail < 3) return -1;
+    return outq[(outq_tail + 2) & (OUTQ_SIZE - 1)];
+}
+
+static int outq_get(BYTE *p, int max)
+{
+    DWORD used = outq_head - outq_tail;
+    int   n, i;
+
+    if (used < 2) return 0;
+    n = (int)outq[outq_tail & (OUTQ_SIZE - 1)]
+      | ((int)outq[(outq_tail + 1) & (OUTQ_SIZE - 1)] << 8);
+    if (n <= 0 || n > max || (DWORD)(n + 2) > used) {
+        outq_tail = outq_head;               /* cannot happen; resynchronise */
+        outq_drops++;
+        return 0;
+    }
+    outq_tail += 2;
+    for (i = 0; i < n; i++)
+        p[i] = outq[(outq_tail + (DWORD)i) & (OUTQ_SIZE - 1)];
+    outq_tail += (DWORD)n;
+    return n;
+}
+
 static int midi_datacount(BYTE status)
 {
     switch (status & 0xF0) {
@@ -435,9 +516,19 @@ static int midi_datacount(BYTE status)
     }
 }
 
+/* Both of these now QUEUE. Nothing on the parsing side talks to the device
+ * any more, which is the whole point. */
 static void midi_short(BYTE s, BYTE d1, BYTE d2)
 {
-    if (hmidi) midiOutShortMsg(hmidi, (DWORD)s | ((DWORD)d1<<8) | ((DWORD)d2<<16));
+    BYTE m[3];
+    int  n;
+
+    m[0] = s; m[1] = d1; m[2] = d2;
+    /* A short message is one to three bytes: realtime status is one, program
+     * change and channel pressure two. Queueing three regardless would send
+     * the synth bytes the game never wrote. */
+    n = (s >= 0xF8) ? 1 : (midi_datacount(s) + 1);
+    outq_put(m, n);
 }
 
 /* Finish the message in the buffer: send it if it is whole, and if it is not,
@@ -542,7 +633,7 @@ static void sysex_release(void)
 static void sysex_end(void)
 {
     if (sysex_over) sysex_trunc++;          /* dropped: see above */
-    else            midi_long(sysex, sxlen);
+    else            outq_put(sysex, sxlen);
     sysex_over = 0;
     in_sysex   = 0;
 }
@@ -608,11 +699,61 @@ static void midi_close(void)
         midiOutClose(hmidi);
         hmidi = NULL;
     }
+    /* Anything still queued belonged to a DOS box that has gone away, or to a
+     * device the user just switched off. Sending it later, out of context, is
+     * worse than dropping it - and this is deliberate, so it is not counted
+     * against outq_drops, which exists to mean something went wrong. */
+    outq_tail = outq_head;
 }
 
-/* Drain the VxD MIDI ring; open the synth on activity, release it when the
- * game's DOS box closes (VM gone), or after the timer for an untracked
- * source. Called every loop wake (whether or not the synth is open). */
+static void out_short(const BYTE *p, int n)
+{
+    DWORD m = (DWORD)p[0];
+    if (n > 1) m |= (DWORD)p[1] << 8;
+    if (n > 2) m |= (DWORD)p[2] << 16;
+    midiOutShortMsg(hmidi, m);
+}
+
+/* Hand queued messages to the device, for at most `budget` ms. The budget is
+ * checked BETWEEN messages, so one slow send still runs to completion - what
+ * it buys is that a hundred of them cannot run back to back while the ring
+ * fills. Whatever is left goes out on the next wake.
+ *
+ * [midi] sysexdelay= rides on this: if the next record is a SysEx and the
+ * previous one went out too recently, stop here and come back next wake. No
+ * sleeping and no stalling - the gap costs a little latency on the SysEx
+ * behind it and nothing else, because the queue is holding the backlog. */
+static void midi_flush(DWORD budget)
+{
+    static BYTE msg[sizeof(sysex)];
+    DWORD t0 = GetTickCount();
+    int   n, first;
+
+    if (outq_head == outq_tail) return;
+    if (!hmidi) midi_open();
+    if (!hmidi) {                              /* nowhere to send it */
+        while (outq_get(msg, sizeof(msg)) > 0) outq_drops++;
+        return;
+    }
+    while ((first = outq_peek()) >= 0) {
+        if (first == 0xF0 && sysex_gap && sysex_last &&
+                (GetTickCount() - sysex_last) < sysex_gap) {
+            sysex_holds++;
+            break;
+        }
+        n = outq_get(msg, sizeof(msg));
+        if (n <= 0) break;
+        if (msg[0] == 0xF0) midi_long(msg, n);
+        else                out_short(msg, n);
+        midi_total += (DWORD)n;
+        if ((GetTickCount() - t0) >= budget) break;
+    }
+}
+
+/* Drain the VxD MIDI ring into the queue, then send from it; open the synth on
+ * activity, release it when the game's DOS box closes (VM gone), or after the
+ * timer for an untracked source. Called every loop wake (whether or not the
+ * synth is open). */
 static void service_midi(void)
 {
     DWORD ret = 0, i;
@@ -621,12 +762,11 @@ static void service_midi(void)
                          midibuf, sizeof(midibuf), &ret, NULL))
         ret = 0;
     if (ret) {
-        if (!hmidi) midi_open();
         for (i = 0; i < ret; i++) midi_feed(midibuf[i]);
-        midi_total += ret;
         midi_last = GetTickCount();
-        return;
     }
+    midi_flush(MIDI_FLUSH_MS);
+    if (ret || outq_head != outq_tail) return; /* still busy */
     if (hmidi) {                               /* quiet right now - release? */
         DWORD st[2] = { 0, 0 }, r = 0;         /* [0] VM gone, [1] DOS box */
         DeviceIoControl(hvxd, IOCTL_VOPL3_MIDI_VM_GONE, NULL, 0,
@@ -691,6 +831,9 @@ static void status_publish(int active)
     g_stat->sysex_blocks = sysex_blocks;
     g_stat->sysex_bytes  = sysex_bytes;
     g_stat->sysex_trunc  = sysex_trunc;
+    g_stat->sysex_holds  = sysex_holds;
+    g_stat->outq_peak    = outq_peak;
+    g_stat->outq_drops   = outq_drops;
     g_stat->sysex_waits  = sysex_waits;
     g_stat->sysex_tries  = sysex_tries;
     g_stat->sysex_err    = sysex_err;

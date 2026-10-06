@@ -76,14 +76,15 @@
 /* --- renderer status shared memory ---------------------------------------- */
 #define VOPL3_STATUS_NAME  "VOPL3_STATUS"
 #define VOPL3_STATUS_MAGIC 0x33504F56u   /* 'VOP3' little-endian */
-#define VOPL3_STATUS_VER   5   /* 2: out_open claimed from reserved[0]
+#define VOPL3_STATUS_VER   6   /* 2: out_open claimed from reserved[0]
                                 * 3: fm_mode and rate claimed from the
                                 *    last two reserved words
                                 * 4: out_dev appended - the first version to
                                 *    GROW the struct, so a reader must map the
                                 *    whole section (not sizeof) and check ver
                                 *    before touching fields past rate
-                                * 5: the sysex_* block appended         */
+                                * 5: the sysex_* block appended
+                                * 6: the MIDI output queue's counters     */
 
 /* out_dev values that are not a device index */
 #define VOPL3_OUT_MAPPER   0xFFFFFFFFu   /* the wave mapper (= WAVE_MAPPER) */
@@ -153,6 +154,17 @@ typedef struct {
                          * A device that will not take long messages at all
                          * fails here every time, and the MIDI Mapper is the
                          * usual one - name the real device instead       */
+    DWORD sysex_holds;  /* times a flush stopped early to keep [midi]
+                         * sysexdelay='s gap. 0 with the setting on means
+                         * nothing ever came close enough to pace        */
+    DWORD outq_peak;    /* deepest the MIDI output queue ever got, bytes.
+                         * Small numbers mean the device keeps up; a large
+                         * one means it fell behind and the queue absorbed
+                         * it, which is what the queue is there for      */
+    DWORD outq_drops;   /* messages thrown away because the queue was full.
+                         * Should always be 0 - anything else means a MIDI
+                         * device so slow that 64 KB of backlog was not
+                         * enough, and DOS-side audio will have suffered */
 } VOPL3_STATUS;
 #endif
 
