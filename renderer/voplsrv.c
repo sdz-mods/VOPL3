@@ -1218,6 +1218,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     DWORD retry_at   = 0;                  /* next reopen attempt (tick)       */
     DWORD retry_ms   = 0;                  /* reopen backoff, 0 = none pending */
 
+    (void)hPrev; (void)lpCmd; (void)nShow;  /* -w3 asks; unused by design */
+
     hvxd = CreateFile("\\\\.\\VOPL3", 0, 0, NULL, 0, FILE_FLAG_DELAYED_ERROR, NULL);
     if (hvxd == INVALID_HANDLE_VALUE) {
         MessageBox(NULL, "Cannot open \\\\.\\VOPL3 - is VOPL3.VXD loaded?\n"

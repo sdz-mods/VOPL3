@@ -57,7 +57,12 @@ try {
     # -otexan -6r -fp6: full optimization. Watcom's default is NO optimization,
     # which makes the synthesis ~2.3x slower - enough to peg a P3-class CPU and
     # starve the whole system at the renderer's realtime priority.
-    $opt = @('-otexan', '-6r', '-fp6')
+    # -w3, not Watcom's default -w1: level 3 is where "missing return value"
+    # (W107) lives, and a function declared to return a value but falling off
+    # the end hands the caller whatever happened to be in the register. The
+    # only noise it adds here is unreferenced-parameter notes, which the
+    # source answers.
+    $opt = @('-otexan', '-6r', '-fp6', '-w3')
     $libs = @('winmm.lib', 'advapi32.lib')
     $core = if ($gccbin) { 'GCC' } else { 'Watcom' }
 
